@@ -20,7 +20,9 @@ build_zb() { log "build zb"; make -C "$ZB" GC=1 -s; (cd "$ZB" && bash run_tests.
 
 build_zig2() {
   log "zb: Zig compiler -> QBE IL"
-  (cd "$ZIGSRC" && "$ZB/zb" src/main.zig -o "$WORK/zig2.ssa" --std-dir lib/std -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig 2>&1 | grep -v 'note:' | head -20)
+  (cd "$ZIGSRC" && "$ZB/zb" src/main.zig -o "$WORK/zig2.ssa" --std-dir lib/std -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig) > "$WORK/zb.log" 2>&1 \
+    || { echo "zb failed:"; grep -v 'note:' "$WORK/zb.log" | tail -30; exit 1; }
+  { grep -v 'note:' "$WORK/zb.log" | head -20; } || true
   log "qbe + as + link zig2"
   "$QBE" -o "$WORK/zig2.s" "$WORK/zig2.ssa"
   cc -c -o "$WORK/zig2.o" "$WORK/zig2.s" 2>&1 | grep -v 'Warning\|Assembler messages' | head -5 || true

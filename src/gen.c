@@ -1373,7 +1373,7 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   if (!strcmp(b, "bitCast")) {
     Val v = rv(gen(x, s, NULL)); if (!ex) die("@bitCast needs a result type");
     if (v.ck) { CVal r; if (ceval_rt(n, s, ex, &r)) { Val c = CK(r); c.t = ex; return c; } if (is_aggr(ex) || is_aggr(v.t)) v = V(v.t, mat(v)), v.ck = 0, v = is_aggr(v.t) ? V(v.t, addr_of(coerce(CK(v.cv), v.t))) : v; else return coerce(v, ex); }
-    if (is_aggr(v.t) || is_aggr(ex)) { if (is_aggr(v.t)) { if (is_aggr(ex)) return V(ex, addr_of(v)); return V(ex, load(ex, addr_of(v))); } char *sl = slot(ex); store(v.t, opnd(v), sl); return V(ex, sl); }
+    if (is_aggr(v.t) || is_aggr(ex)) { if (is_aggr(v.t)) { if (is_aggr(ex)) { if (is_wide(ex) && ex->bits < 128 && ex->bits > 64) { char *sl = slot(ex); blit(addr_of(v), sl, 16); wnorm(ex, sl); return V(ex, sl); } return V(ex, addr_of(v)); } return V(ex, load(ex, addr_of(v))); } char *sl = slot(ex); store(v.t, opnd(v), sl); return V(ex, sl); }
     if (v.t->k == TY_FLOAT && v.t->bits == 16 && ex->k != TY_FLOAT) { char *r = tmp(); emit("%s =w call $zb_f2h(s %s)", r, opnd(v)); return V(ex, norm(r, ex)); }
     if (ex->k == TY_FLOAT && ex->bits == 16 && v.t->k != TY_FLOAT) { char *r = tmp(); emit("%s =s call $zb_h2f(w %s)", r, opnd(v)); return V(ex, r); }
     if ((v.t->k == TY_FLOAT) != (ex->k == TY_FLOAT)) { char *r = tmp(); emit("%s =%c cast %s", r, qc(ex), opnd(v)); return V(ex, r); }
