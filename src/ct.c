@@ -1612,8 +1612,72 @@ static CVal decls_val(Type *st, Container *c) {
   CVal *arr = xalloc(sizeof(CVal) * (items.n + 1)); for (int i = 0; i < items.n; i++) arr[i] = *(CVal *)items.a[i];
   return slice_val(dt, arr, items.n);
 }
+
+static int ti17(void) { static int v = -1; if (v < 0) v = field_index(bt_type("Type.Struct"), "field_names") >= 0; return v; }
+static CVal names_val(Type *st, const char *fname, Container *c, int decls) { /* []const [:0]const u8 of field or pub decl names */
+  Type *dt = ftype(st, fname); Vec items = {0};
+  if (c) { if (decls) { for (int i = 0; i < c->decls.n; i++) { Decl *d = c->decls.a[i]; if (d->node->flags & F_PUB) vpush(&items, (void *)d->name); } }
+    else for (int i = 0; i < c->fields.n; i++) vpush(&items, (void *)((Field *)c->fields.a[i])->name); }
+  CVal *arr = xalloc(sizeof(CVal) * (items.n + 1)); for (int i = 0; i < items.n; i++) arr[i] = zstr(items.a[i]);
+  return slice_val(dt, arr, items.n);
+}
+static CVal type_info17(Type *T, const char **tagp) {
+  CVal pay = cv_void(); const char *tag = NULL;
+  switch (T->k) {
+  case TY_PTR: case TY_MPTR: case TY_SLICE: {
+    tag = "pointer"; Type *pt = bt_type("Type.Pointer"); pay = mk_struct(pt);
+    setf(&pay, "size", enum_lit_val(bt_type("Type.Pointer.Size"), T->k == TY_PTR ? "one" : T->k == TY_MPTR ? "many" : "slice"));
+    CVal at = mk_struct(ftype(pt, "attrs")); setf(&at, "const", cv_bool(T->isconst)); setf(&pay, "attrs", at);
+    setf(&pay, "child", cv_ty(T->elem));
+    setf(&pay, "sentinel_ptr", T->hassent ? ptr_to_val(cv_int(T->sent, T->elem)) : cv_null()); break;
+  }
+  case TY_STRUCT: case TY_TUPLE: {
+    tag = "struct"; Type *st = bt_type("Type.Struct"); pay = mk_struct(st); layout(T->ct);
+    setf(&pay, "layout", enum_lit_val(bt_type("Type.ContainerLayout"), T->ct->packed ? "packed" : T->ct->layout_kind == 1 ? "extern" : "auto"));
+    setf(&pay, "backing_integer", T->ct->packed ? cv_ty(int_type(T->ct->packed, 0)) : cv_null());
+    int n = T->ct->fields.n; CVal *ts = xalloc(sizeof(CVal) * (n + 1)), *as = xalloc(sizeof(CVal) * (n + 1)); Type *ft = ftype(st, "field_attrs");
+    for (int i = 0; i < n; i++) { Field *f = T->ct->fields.a[i]; ts[i] = cv_ty(f->t); as[i] = mk_struct(ft->elem);
+      CVal dv = (f->def || f->defcv) ? default_of(T, f) : cv_undef(NULL);
+      setf(&as[i], "default_value_ptr", dv.k != CV_UNDEF ? ptr_to_val(dv) : cv_null());
+      setf(&as[i], "comptime", cv_bool((type_is_ctonly(f->t) && T->ct->is_tuple) || f->is_ct)); }
+    setf(&pay, "field_names", names_val(st, "field_names", T->ct, 0)); setf(&pay, "field_types", slice_val(ftype(st, "field_types"), ts, n));
+    setf(&pay, "field_attrs", slice_val(ft, as, n)); setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1)); setf(&pay, "is_tuple", cv_bool(T->ct->is_tuple)); break;
+  }
+  case TY_ENUM: {
+    tag = "enum"; Type *st = bt_type("Type.Enum"); pay = mk_struct(st); layout(T->ct);
+    setf(&pay, "tag_type", cv_ty(T->ct->tag));
+    int n = T->ct->fields.n; CVal *vs = xalloc(sizeof(CVal) * (n + 1));
+    for (int i = 0; i < n; i++) vs[i] = cv_int(((Field *)T->ct->fields.a[i])->val, t_cint);
+    setf(&pay, "field_names", names_val(st, "field_names", T->ct, 0)); setf(&pay, "field_values", slice_val(ftype(st, "field_values"), vs, n));
+    setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1));
+    setf(&pay, "mode", enum_lit_val(bt_type("Type.Enum.Mode"), T->ct->nonexh ? "nonexhaustive" : "exhaustive")); break;
+  }
+  case TY_UNION: {
+    tag = "union"; Type *st = bt_type("Type.Union"); pay = mk_struct(st); layout(T->ct);
+    setf(&pay, "layout", enum_lit_val(bt_type("Type.ContainerLayout"), T->ct->layout_kind == 1 ? "extern" : T->ct->layout_kind == 2 ? "packed" : "auto"));
+    setf(&pay, "tag_type", T->ct->tagged ? cv_ty(T->ct->tag) : cv_null());
+    int n = T->ct->fields.n; CVal *ts = xalloc(sizeof(CVal) * (n + 1)), *as = xalloc(sizeof(CVal) * (n + 1)); Type *ft = ftype(st, "field_attrs");
+    for (int i = 0; i < n; i++) { ts[i] = cv_ty(((Field *)T->ct->fields.a[i])->t); as[i] = mk_struct(ft->elem); }
+    setf(&pay, "field_names", names_val(st, "field_names", T->ct, 0)); setf(&pay, "field_types", slice_val(ftype(st, "field_types"), ts, n));
+    setf(&pay, "field_attrs", slice_val(ft, as, n)); setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1)); break;
+  }
+  case TY_ERRSET: { tag = "error_set"; Type *st = bt_type("Type.ErrorSet"); pay = mk_struct(st); setf(&pay, "error_names", cv_null()); break; }
+  case TY_OPAQUE: { tag = "opaque"; Type *st = bt_type("Type.Opaque"); pay = mk_struct(st); setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1)); break; }
+  case TY_FN: case TY_ANYTYPE: {
+    tag = "fn"; Type *st = bt_type("Type.Fn"); pay = mk_struct(st); int gen = T->k == TY_ANYTYPE;
+    CVal at = mk_struct(ftype(st, "attrs")); if (!gen) setf(&at, "varargs", cv_bool(T->varargs)); setf(&pay, "attrs", at);
+    setf(&pay, "is_generic", cv_bool(gen)); setf(&pay, "return_type", !gen && T->ret ? cv_ty(T->ret) : cv_null());
+    int n = gen ? 0 : T->params.n; CVal *ps = xalloc(sizeof(CVal) * (n + 1)), *as = xalloc(sizeof(CVal) * (n + 1)); Type *pa = ftype(st, "param_attrs");
+    for (int i = 0; i < n; i++) { ps[i] = cv_ty(T->params.a[i]); as[i] = mk_struct(pa->elem); }
+    setf(&pay, "param_types", slice_val(ftype(st, "param_types"), ps, n)); setf(&pay, "param_attrs", slice_val(pa, as, n)); break;
+  }
+  default: return pay;
+  }
+  *tagp = tag; return pay;
+}
 static CVal type_info(Type *T) {
   Type *TI = bt_type("Type"); const char *tag = NULL; CVal pay = cv_void();
+  if (ti17()) { pay = type_info17(T, &tag); if (tag) return mk_union(TI, tag, pay); }
   switch (T->k) {
   case TY_TYPE: tag = "type"; break; case TY_VOID: tag = "void"; break; case TY_BOOL: tag = "bool"; break;
   case TY_NORET: tag = "noreturn"; break; case TY_CINT: tag = "comptime_int"; break; case TY_CFLOAT: tag = "comptime_float"; break;
@@ -1712,6 +1776,7 @@ int bits_of(Type *t) {
   if (t->k == TY_INT || t->k == TY_FLOAT) return t->bits; if (t->k == TY_BOOL) return 1;
   if (t->k == TY_ENUM) { layout(t->ct); return t->ct->tag->bits; }
   if (is_packed(t)) { layout(t->ct); return t->ct->packed; }
+  if (t->k == TY_UNION && t->ct && t->ct->node && (t->ct->node->flags & F_PACKED)) { layout(t->ct); int m = 0; for (int i = 0; i < t->ct->fields.n; i++) { int b = bits_of(((Field *)t->ct->fields.a[i])->t); if (b > m) m = b; } return m; }
   if (t->k == TY_ARRAY && is_vec(t)) return (int)(bits_of(t->elem) * t->len);
   return tsize(t) * 8;
 }
@@ -1787,6 +1852,15 @@ static int ev_builtin(Node *n, Scope *s, CVal *out) {
 #define TY(node, var) do { CVal tv_; ct_force++; int r_ = ev(node, s, &tv_); ct_force--; if (r_ != R_OK) return r_; if (tv_.k != CV_TYPE) return R_FAIL; var = tv_.t; } while (0)
   Type *T;
   Type *urt = unwrap_rt(rt);
+  if (B("backingInt")) { /* 0.17: enums / tagged unions -> tag int; bitpacks -> backing int */
+    EV(x, s, &a); Type *at = cv_typeof(&a);
+    if (at->k == TY_ENUM || at->k == TY_UNION && at->ct->tagged || at->k == TY_CINT || at->k == TY_INT) b0 = "intFromEnum"; else { b0 = "bitCast"; urt = int_type(bits_of(at), 0); }
+  } else if (B("fromBackingInt")) { if (!urt) return R_FAIL; b0 = urt->k == TY_ENUM ? "enumFromInt" : "bitCast"; }
+  if (B("divCeil")) {
+    EV(x, s, &a); EV(y, s, &b); if (a.k != CV_INT || b.k != CV_INT || !b.i) return R_FAIL;
+    Type *t = peer_int(&a, &b); i128 p = a.i, q = b.i, r = p / q; if ((p % q != 0) && ((p < 0) == (q < 0))) r++;
+    *out = cv_int(wrap_int(r, t), t); return R_OK;
+  }
   if (B("This")) { *out = cv_ty(this_container(s)->type); return R_OK; }
   if (B("import")) { EV(x, s, &a); if (a.k != CV_STR) return R_FAIL;
     if (a.slen > 4 && !memcmp(a.s + a.slen - 4, ".zon", 4)) { /* ZON: evaluate the file's expression with the result type */

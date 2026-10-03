@@ -16,7 +16,7 @@ end() { echo "::endgroup::" 2>/dev/null || true; }
 cp "$ZB/tools/config.zig" "$ZIGSRC/config.zig"
 CCFLAGS="-std=c99 -O${OPT:-1} -w -fno-stack-protector -fno-strict-aliasing -fno-tree-sra -I$ZIGSRC/lib"
 
-build_zb() { log "build zb"; make -C "$ZB" GC=1 -s; (cd "$ZB" && ./run_tests.sh | tail -3); end; }
+build_zb() { log "build zb"; make -C "$ZB" GC=1 -s; (cd "$ZB" && bash run_tests.sh | tail -3); end; }
 
 build_zig2() {
   log "zb: Zig compiler -> QBE IL"
@@ -25,7 +25,7 @@ build_zig2() {
   "$QBE" -o "$WORK/zig2.s" "$WORK/zig2.ssa"
   cc -c -o "$WORK/zig2.o" "$WORK/zig2.s" 2>&1 | grep -v 'Warning\|Assembler messages' | head -5 || true
   cc -O1 -c -o "$WORK/zbrt.o" "$ZB/tools/zbrt.c"
-  cc -o "$WORK/zig2" "$WORK/zig2.o" "$WORK/zbrt.o" -lm -pthread -Wl,-z,stack-size=0x10000000
+  cc -o "$WORK/zig2" "$WORK/zig2.o" "$WORK/zig2.ssa.asm.s" "$WORK/zbrt.o" -lm -pthread -Wl,-z,stack-size=0x10000000
   rm -f "$WORK/zig2.ssa" "$WORK/zig2.s" "$WORK/zig2.o"; end
 }
 

@@ -60,6 +60,7 @@ int is_scalar(Type *t) {
 int is_aggr(Type *t) {
   switch (t->k) { case TY_SLICE: case TY_ARRAY: case TY_STRUCT: case TY_UNION: case TY_ERRU: case TY_TUPLE: return 1;
   case TY_INT: return t->bits > 64;
+  case TY_FLOAT: return t->bits > 64; /* f80/f128 live in 16-byte memory (real format) */
   case TY_OPT: return !opt_is_ptr(t); default: return 0; }
 }
 static int alup(int x, int a) { return a ? (x + a - 1) / a * a : x; }
@@ -196,6 +197,8 @@ static int ty_bits(Type *t) {
   if (t->k == TY_INT) return t->bits; if (t->k == TY_BOOL) return 1;
   if (t->k == TY_ENUM) { layout(t->ct); return t->ct->tag->bits; }
   if (t->k == TY_STRUCT) { layout(t->ct); if (t->ct->layout_kind == 2) return t->ct->packed; }
+  if (t->k == TY_UNION && t->ct && t->ct->node && (t->ct->node->flags & F_PACKED)) { layout(t->ct); int m = 0; for (int i = 0; i < t->ct->fields.n; i++) { Field *f = t->ct->fields.a[i]; int b = ty_bits(f->t); if (b > m) m = b; } return m; }
+  if (t->k == TY_FLOAT) return t->bits;
   if (t->k == TY_VOID) return 0;
   return tsize(t) * 8;
 }

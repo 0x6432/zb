@@ -37,28 +37,30 @@ static void jmp(char *l) { if (!term) emit("jmp @%s", l); term = 1; }
 static void br(char *c, char *a, char *b) { emit("jnz %s, @%s, @%s", c, a, b); term = 1; }
 static char *tmp(void) { return fmt("%%t%d", ++tmpc); }
 static char qc(Type *t) {
-  if (t->k == TY_FLOAT) { if (t->bits == 32) return 's'; if (t->bits == 64) return 'd'; return t->bits == 16 ? 's' : 'd'; /* f16 in 's', f80/f128 in 'd' registers; memory via zbrt shims */ }
+  if (t->k == TY_FLOAT) { if (t->bits == 32) return 's'; if (t->bits == 64) return 'd'; return t->bits == 16 ? 's' : 'l'; /* f16 in 's', f80/f128 in 'd' registers; memory via zbrt shims */ }
   if (t->k == TY_CFLOAT) return 'd';
   if (is_aggr(t)) return 'l'; return tsize(t) == 8 ? 'l' : 'w'; }
 static char *slot(Type *t) {
   char *n = tmp(); int a = talign(t), s = tsize(t); if (s < 1) s = 1;
   fprintf(ab, "\t%s =l alloc%d %d\n", n, a >= 16 ? 16 : a > 4 ? 8 : 4, s); return n;
 }
+static void blit(char *src, char *dst, int n) { if (n > 0) emit("blit %s, %s, %d", src, dst, n); }
 static char *load(Type *t, char *addr) {
   int s = tsize(t); if (!s) return "0";
   int sg = t->k == TY_INT && t->sign; char *r = tmp();
   const char *ins = s == 1 ? (sg ? "loadsb" : "loadub") : s == 2 ? (sg ? "loadsh" : "loaduh") : s == 4 ? "loadw" : "loadl";
+  if (t->k == TY_FLOAT && t->bits > 64) { char *sl = slot(t); blit(addr, sl, 16); return sl; }
   if (t->k == TY_FLOAT && t->bits != 32 && t->bits != 64) { emit("%s =%c call $zb_ldf%d(l %s)", r, qc(t), t->bits, addr); return r; }
   if (t->k == TY_FLOAT) ins = qc(t) == 's' ? "loads" : "loadd";
   emit("%s =%c %s %s", r, qc(t), ins, addr); return r;
 }
 static void store(Type *t, char *v, char *addr) {
   int s = tsize(t); if (!s) return;
+  if (t->k == TY_FLOAT && t->bits > 64) { blit(v, addr, 16); return; }
   if (t->k == TY_FLOAT && t->bits != 32 && t->bits != 64) { emit("call $zb_stf%d(l %s, %c %s)", t->bits, addr, qc(t), v); return; }
   if (t->k == TY_FLOAT) { emit("store%c %s, %s", qc(t), v, addr); return; }
   emit("store%s %s, %s", s == 1 ? "b" : s == 2 ? "h" : s == 4 ? "w" : "l", v, addr);
 }
-static void blit(char *src, char *dst, int n) { if (n > 0) emit("blit %s, %s, %d", src, dst, n); }
 static char *addp(char *a, int64_t off) { if (!off) return a; char *r = tmp(); emit("%s =l add %s, %lld", r, a, (long long)off); return r; }
 static char *norm(char *v, Type *t) {
   if (t->k != TY_INT) return v; int b = t->bits; char c = qc(t);
@@ -249,6 +251,7 @@ static FnInst *plain_inst(Decl *d) {
 }
 static char *mat(Val v) {
   if (!v.ck) return v.op;
+  if (v.t && v.t->k == TY_FLOAT && v.t->bits > 64 && (v.cv.k == CV_FLOAT || v.cv.k == CV_INT)) return cv_data(&v.cv, v.t);
   switch (v.cv.k) {
   case CV_INT: case CV_BOOL: case CV_ERR: return fmt("%lld", (long long)v.cv.i);
   case CV_NULL: case CV_UNDEF: return "0";
@@ -369,6 +372,24 @@ static int is_ptrish(Type *t) { return t->k == TY_PTR || t->k == TY_MPTR || t->k
 static Val retype(Val v, Type *t) { v = rv(v); v.t = t; return v; }
 
 static Val wconv(Val v, Type *to);
+static int is_bigf(Type *t) { return t->k == TY_FLOAT && t->bits > 64; }
+static Val bigf_conv(Val v, Type *f, Type *to) {
+  char *o = opnd(v);
+  if (f->k == TY_BOOL) { v = coerce(v, t_u8); f = t_u8; o = opnd(v); }
+  if (is_bigf(f) && is_bigf(to)) { if (f->bits == to->bits) return V(to, o); char *sl = slot(to); emit("call $zb_fconv(w %d, l %s, w %d, l %s)", to->bits, sl, f->bits, o); return V(to, sl); }
+  if (is_bigf(f) && to->k == TY_FLOAT) { char *r = tmp(); emit("%s =%c call $zb_fto%d(w %d, l %s)", r, qc(to), qc(to) == 's' ? 32 : 64, f->bits, o); return V(to, r); }
+  if (f->k == TY_FLOAT && is_bigf(to)) { char *x = o; if (qc(f) == 's') { x = tmp(); emit("%s =d exts %s", x, o); } char *sl = slot(to); emit("call $zb_fext(w %d, l %s, d %s)", to->bits, sl, x); return V(to, sl); }
+  if (is_bigf(f) && to->k == TY_INT) {
+    if (is_wide(to)) { if (to->bits > 128) die("f%d -> %s unsupported", f->bits, tname(to)); char *sl = slot(to); emit("call $zb_toi128(w %d, l %s, l %s, w %d)", f->bits, sl, o, to->sign); return V(to, sl); }
+    char *r = tmp(); emit("%s =l call $zb_toi(w %d, l %s, w %d)", r, f->bits, o, to->sign);
+    if (qc(to) == 'w') { char *r2 = tmp(); emit("%s =w copy %s", r2, r); return V(to, norm(r2, to)); } return V(to, r); }
+  if (f->k == TY_INT && is_bigf(to)) { char *sl = slot(to);
+    if (is_wide(f)) { if (f->bits > 128) die("%s -> f%d unsupported", tname(f), to->bits); emit("call $zb_fromi128(w %d, l %s, l %s, w %d)", to->bits, sl, o, f->sign); return V(to, sl); }
+    char *x = o; if (qc(f) == 'w') { x = tmp(); emit("%s =l ext%sw %s", x, f->sign ? "s" : "u", o); }
+    emit("call $zb_fromi(w %d, l %s, l %s, w %d)", to->bits, sl, x, f->sign); return V(to, sl); }
+  die("bad float conversion %s -> %s", tname(f), tname(to));
+}
+static char *bigf_op(int op, Type *t, char *a, char *b) { char *sl = slot(t); emit("call $zb_fop(w %d, w %d, l %s, l %s, l %s)", t->bits, op, sl, a, b ? b : "0"); return sl; }
 static Val float_conv(Val v, Type *to) { /* float -> float, int -> float, float -> int at runtime */
   v = rv(v); Type *f = v.t;
   if (v.ck) { CVal c = v.cv; if (c.k == CV_INT && is_float(to)) c = cv_float((f128)c.i, to);
@@ -376,6 +397,7 @@ static Val float_conv(Val v, Type *to) { /* float -> float, int -> float, float 
     if (c.k == CV_FLOAT && to->k == TY_INT) return CK(cv_int(wrap_int((i128)c.f, to), to));
     if (c.k == CV_INT && to->k == TY_INT) return CK(cv_int(wrap_int(c.i, to), to));
     if (f->k == TY_CINT) { v = coerce(v, t_i64); f = t_i64; } else if (f->k == TY_CFLOAT) { v = coerce(v, t_f64); f = t_f64; } }
+  if (is_bigf(f) || is_bigf(to)) return bigf_conv(v, f, to);
   char *o = opnd(v), *r = tmp();
   if (f->k == TY_FLOAT && to->k == TY_FLOAT) {
     if (qc(f) == qc(to)) return V(to, o);
@@ -730,6 +752,7 @@ static Val gen_member(Val base, const char *name, Node *n) {
       r.bf = 1; if (!base.lv) { Val x = r; x.lv = 1; return rv(x); }
       return r;
     }
+    if (t->k == TY_UNION && base.lv && base.bf) { Val r = base; r.t = f->t; return r; } /* packed union inside a packed struct */
     return LV(f->t, addp(addr_of(base), f->off));
   }
   case TY_SLICE:
@@ -929,6 +952,8 @@ static Val gen_cmp(const char *op, Val a, Val b) {
   if (a.ck && b.ck && (a.cv.k == CV_FLOAT || b.cv.k == CV_FLOAT)) return fold_bin(op, a, b);
   if (is_float(t)) {
     if (t->k == TY_CFLOAT) { t = t_f64; a = coerce(a, t); b = coerce(b, t); }
+    if (is_bigf(t)) { int k = eq ? 0 : ne ? 1 : !strcmp(op, "<") ? 2 : !strcmp(op, "<=") ? 3 : !strcmp(op, ">") ? 4 : 5; char *x = opnd(a), *y = opnd(b), *r = tmp();
+      emit("%s =w call $zb_fcmp(w %d, w %d, l %s, l %s)", r, t->bits, k, x, y); return V(t_bool, r); }
     const char *fc = eq ? "ceq" : ne ? "cne" : !strcmp(op, "<") ? "clt" : !strcmp(op, ">") ? "cgt" : !strcmp(op, "<=") ? "cle" : "cge";
     char *x = opnd(a), *y = opnd(b), *r = tmp(); emit("%s =w %s%c %s, %s", r, fc, qc(t), x, y); return V(t_bool, r);
   }
@@ -956,6 +981,7 @@ static Val gen_arith(const char *op, Val a, Val b) {
   if (t->k == TY_CFLOAT) t = t_f64;
   if (t->k == TY_FLOAT) {
     a = coerce(a, t); b = coerce(b, t); char c = qc(t), *x = opnd(a), *y = opnd(b), *r = tmp();
+    if (is_bigf(t)) { int k = op[0] == '+' ? 0 : op[0] == '-' ? 1 : op[0] == '*' ? 2 : op[0] == '/' ? 3 : op[0] == '%' ? 4 : -1; if (k < 0) die("unsupported float operator %s", op); return V(t, bigf_op(k, t, x, y)); }
     if (op[0] == '%') { emit("%s =%c call $%s(%c %s, %c %s)", r, c, c == 's' ? "fmodf" : "fmod", c, x, c, y); return V(t, r); }
     const char *ins = op[0] == '+' ? "add" : op[0] == '-' ? "sub" : op[0] == '*' ? "mul" : op[0] == '/' ? "div" : NULL;
     if (!ins) die("unsupported float operator %s", op);
@@ -1263,6 +1289,25 @@ static Val gen_minmax(Node *n, Scope *s, Type *ex, int mn) {
 static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   const char *b = n->s; Node *x = n->list.n ? n->list.a[0] : NULL, *y = n->list.n > 1 ? n->list.a[1] : NULL;
   CVal c; Type *ex0 = ex; if (ex && ex->k == TY_ERRU) ex = ex->elem;
+  if (!strcmp(b, "backingInt")) { Type *at = typeof_impl(x, s);
+    if (at->k == TY_ENUM || (at->k == TY_UNION && at->ct->tagged) || at->k == TY_INT || at->k == TY_CINT) b = "intFromEnum"; else { b = "bitCast"; ex = ex0 = int_type(bits_of(at), 0); } }
+  else if (!strcmp(b, "fromBackingInt")) { Type *u = ex && ex->k == TY_OPT ? ex->elem : ex; if (!u) die("%s:%d: @fromBackingInt needs a result type", n->tok->file, n->tok->line); 
+    if (u->ct) layout(u->ct); Type *bt = u->k == TY_ENUM ? u->ct->tag : int_type(bits_of(u), 0);
+    Val v = coerce(rv(gen(x, s, bt)), bt); if (v.ck && u->k == TY_ENUM) { CVal r = v.cv; r.t = u; return CK(r); }
+    if (u->k == TY_ENUM) return V(u, opnd(v));
+    if (!is_aggr(u)) return V(u, opnd(v));
+    char *sl = slot(u); store(bt, opnd(v), sl); return V(u, sl); }
+  if (!strcmp(b, "divCeil")) {
+    Val a = rv(gen(x, s, ex)), d = rv(gen(y, s, ex)); Type *t = peer(a, d); if (t->k == TY_CINT) t = ex ? ex : t_i64;
+    a = coerce(a, t); d = coerce(d, t); if (is_wide(t)) die("%s:%d: @divCeil on wide ints unsupported", n->tok->file, n->tok->line);
+    char cl = qc(t), *A = opnd(a), *D = opnd(d), *q = tmp(), *r = tmp(), *nz = tmp(), *adj = tmp(), *ext = tmp(), *res = tmp();
+    emit("%s =%c %s %s, %s", q, cl, t->sign ? "div" : "udiv", A, D); emit("%s =%c %s %s, %s", r, cl, t->sign ? "rem" : "urem", A, D);
+    emit("%s =w cne%c %s, 0", nz, cl, r);
+    if (t->sign) { char *x1 = tmp(), *pos = tmp(); emit("%s =%c xor %s, %s", x1, cl, r, D); emit("%s =w csge%c %s, 0", pos, cl, x1); emit("%s =w and %s, %s", adj, nz, pos); }
+    else emit("%s =w copy %s", adj, nz);
+    if (cl == 'l') emit("%s =l extuw %s", ext, adj); else emit("%s =w copy %s", ext, adj);
+    emit("%s =%c add %s, %s", res, cl, q, ext); return V(t, norm(res, t));
+  }
   if (!strcmp(b, "call")) {
     Node *fnn = y, *an = n->list.a[2]; Node *cn = xalloc(sizeof *cn); cn->k = N_CALL; cn->tok = n->tok; cn->a = fnn;
     if (an->k == N_INIT && !an->a && !(an->flags & F_FIELDS)) { for (int i = 0; i < an->list.n; i++) vpush(&cn->list, an->list.a[i]); }
@@ -1311,10 +1356,13 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
     if (is_vec(t)) { char *sl = slot(t); Val av = V(t, addr_of(v));
       for (int64_t i = 0; i < t->len; i++) { char c = qc(t->elem), *r = tmp(); emit("%s =%c call $%s%s(%c %s)", r, c, b, c == 's' ? "f" : "", c, opnd(vel(av, i))); store(t->elem, r, addp(sl, i * tsize(t->elem))); }
       return V(t, sl); }
+    if (is_bigf(t)) { static const char *nm[] = { "sqrt", "floor", "ceil", "trunc", "round", "sin", "cos", "tan", "exp", "exp2", "exp10", "log", "log2", "log10" };
+      for (int k = 0; k < 14; k++) if (!strcmp(b, nm[k])) return V(t, bigf_op(10 + k, t, opnd(v), NULL)); }
     char c = qc(t), *r = tmp(); emit("%s =%c call $%s%s(%c %s)", r, c, b, c == 's' ? "f" : "", c, opnd(v)); return V(t, r);
   }
   if (!strcmp(b, "mulAdd")) {
     Type *t = eval_type(x, s); Val a1 = coerce(gen(y, s, t), t), a2 = coerce(gen(n->list.a[2], s, t), t), a3 = coerce(gen(n->list.a[3], s, t), t);
+    if (is_bigf(t)) { char *sl = slot(t); emit("call $zb_fma(w %d, l %s, l %s, l %s, l %s)", t->bits, sl, opnd(a1), opnd(a2), opnd(a3)); return V(t, sl); }
     char c = qc(t), *r = tmp(); emit("%s =%c call $fma%s(%c %s, %c %s, %c %s)", r, c, c == 's' ? "f" : "", c, opnd(a1), c, opnd(a2), c, opnd(a3)); return V(t, r);
   }
   if (!strcmp(b, "intCast") || !strcmp(b, "truncate")) {
@@ -1484,6 +1532,7 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   if (!strcmp(b, "divFloor") || !strcmp(b, "mod")) {
     Val a = rv(gen(x, s, ex)), d = rv(gen(y, s, ex)); Type *t = peer(a, d); if (t->k == TY_CINT) t = ex ? ex : t_i64;
     a = coerce(a, t); d = coerce(d, t);
+    if (is_bigf(t)) return V(t, bigf_op(b[0] == 'd' ? 24 : 5, t, opnd(a), opnd(d)));
     if (is_float(t)) { char c = qc(t), *q = tmp(), *f = tmp(); emit("%s =%c div %s, %s", q, c, opnd(a), opnd(d));
       emit("%s =%c call $%s(%c %s)", f, c, c == 's' ? "floorf" : "floor", c, q); if (b[0] == 'd') return V(t, f);
       char *m = tmp(), *r = tmp(); emit("%s =%c mul %s, %s", m, c, f, opnd(d)); emit("%s =%c sub %s, %s", r, c, opnd(a), m); return V(t, r); }
@@ -1500,6 +1549,7 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   if (!strcmp(b, "shlExact") || !strcmp(b, "shrExact")) return gen_arith(b[1] == 'h' && b[2] == 'l' ? "<<" : ">>", gen(x, s, ex), gen(y, s, NULL));
   if (!strcmp(b, "abs")) {
     Val a = rv(gen(x, s, NULL)); Type *t = a.t;
+    if (is_bigf(t)) return V(t, bigf_op(9, t, opnd(a), NULL));
     if (t->k == TY_FLOAT) { char c = qc(t), *r = tmp(); emit("%s =%c call $fabs%s(%c %s)", r, c, c == 's' ? "f" : "", c, opnd(a)); return V(t, r); }
     if (t->k == TY_INT && !t->sign) return a;
     if (is_vec(t)) { char *sl = slot(t); Val av = V(t, addr_of(a)); Type *et = t->elem; Type *ut = et->k == TY_INT ? int_type(et->bits, 0) : et;
@@ -2155,6 +2205,66 @@ static void gen_destruct(Node *n, Scope *s) {
 /* ---------- inline asm: only `syscall` is supported (via libc syscall(), errno -> -errno) ---------- */
 static int sys_helper_done;
 static Val gen(Node *n, Scope *s, Type *ex);
+
+/* general inline asm: each site becomes a stub function in the side file <out>.asm.s.
+   The stub gets a buffer pointer (rdi) holding 8-byte slots [inputs..., outputs...]; it saves callee-saved
+   registers, loads inputs into their constraint registers, runs the template, and stores outputs back. */
+FILE *asm_out; static int asm_n;
+static const char *areg[16][4] = { {"rax","eax","ax","al"}, {"rbx","ebx","bx","bl"}, {"rcx","ecx","cx","cl"}, {"rdx","edx","dx","dl"},
+  {"rsi","esi","si","sil"}, {"rdi","edi","di","dil"}, {"rbp","ebp","bp","bpl"}, {"r8","r8d","r8w","r8b"}, {"r9","r9d","r9w","r9b"},
+  {"r10","r10d","r10w","r10b"}, {"r11","r11d","r11w","r11b"}, {"r12","r12d","r12w","r12b"}, {"r13","r13d","r13w","r13b"},
+  {"r14","r14d","r14w","r14b"}, {"r15","r15d","r15w","r15b"}, {"rsp","esp","sp","spl"} };
+static int areg_find(const char *nm) { for (int r = 0; r < 16; r++) for (int k = 0; k < 4; k++) if (!strcmp(nm, areg[r][k])) return r; return -1; }
+static int asz_idx(Type *t) { int64_t z = tsize(t); return z >= 8 ? 0 : z == 4 ? 1 : z == 2 ? 2 : 3; }
+static Val gen_asm_stub(Node *n, Scope *s, CVal *tpl, Type *rt) {
+  Val none = {0}; if (!asm_out) return none;
+  int m = n->list.n; if (m > 24) return none;
+  int reg[24], dir[24], rw[24]; Type *ty[24]; Val lvs[24]; char *ins[24]; int used = 0;
+  for (int i = 0; i < m; i++) {
+    Node *o = n->list.a[i]; char con[64]; const char *L = o->label;
+    if (L[0] == '"') snprintf(con, sizeof con, "%.*s", (int)strlen(L) - 2, L + 1); else snprintf(con, sizeof con, "%s", L);
+    char *c = con; dir[i] = o->ival; rw[i] = 0; reg[i] = -1;
+    if (*c == '=') c++; else if (*c == '+') { c++; rw[i] = 1; }
+    if (*c == '&') c++;
+    if (*c == '{') { char nm[16]; snprintf(nm, sizeof nm, "%.*s", (int)strcspn(c + 1, "}"), c + 1); reg[i] = areg_find(nm); if (reg[i] < 0) return none; used |= 1 << reg[i]; }
+    else if (strcmp(c, "r")) return none;
+  }
+  for (int i = 0; i < m; i++) if (reg[i] < 0) { static const int pool[] = { 0, 2, 3, 4, 5, 7, 8, 9, 10, 1, 11, 12, 13, 14 };
+    for (int k = 0; k < 14; k++) if (!(used & (1 << pool[k]))) { reg[i] = pool[k]; used |= 1 << pool[k]; break; } if (reg[i] < 0) return none; }
+  /* evaluate operands */
+  for (int i = 0; i < m; i++) { Node *o = n->list.a[i]; ins[i] = NULL;
+    if (dir[i] == 0) { if (o->flags & F_REF) ty[i] = rt; else { lvs[i] = gen(o->a, s, NULL); if (!lvs[i].lv || lvs[i].bf) return none; ty[i] = lvs[i].t; }
+      if (is_float(ty[i])) return none;
+      if (rw[i]) { Val v = rv(lvs[i]); ins[i] = opnd(v); if (qc(v.t) == 'w') { char *e = tmp(); emit("%s =l extuw %s", e, ins[i]); ins[i] = e; } } }
+    else { Val v = rv(gen(o->a, s, NULL)); if (v.t->k == TY_CINT) v = coerce(v, t_u64); if (is_float(v.t)) return none; ty[i] = v.t;
+      ins[i] = opnd(v); if (qc(v.t) == 'w') { char *e = tmp(); emit("%s =l extuw %s", e, ins[i]); ins[i] = e; } } }
+  int id = asm_n++; char *buf = tmp(); emit("%s =l alloc8 %d", buf, 8 * (m ? m : 1));
+  for (int i = 0; i < m; i++) if (ins[i]) emit("storel %s, %s", ins[i], addp(buf, 8 * i));
+  emit("call $zb_asm_%d(l %s)", id, buf);
+  FILE *f = asm_out; fprintf(f, "\t.text\n\t.globl zb_asm_%d\nzb_asm_%d:\n\tpush %%rbx\n\tpush %%rbp\n\tpush %%r12\n\tpush %%r13\n\tpush %%r14\n\tpush %%r15\n\tpush %%rdi\n", id, id);
+  int rdi_in = -1;
+  for (int i = 0; i < m; i++) if (ins[i]) { if (reg[i] == 5) rdi_in = i; else fprintf(f, "\tmovq %d(%%rdi), %%%s\n", 8 * i, areg[reg[i]][0]); }
+  if (rdi_in >= 0) fprintf(f, "\tmovq %d(%%rdi), %%rdi\n", 8 * rdi_in);
+  fputc('\t', f);
+  for (int k = 0; k < tpl->slen; k++) { char ch = tpl->s[k];
+    if (ch == '%' && k + 1 < tpl->slen && tpl->s[k + 1] == '%') { fputc('%', f); k++; continue; }
+    if (ch == '%' && k + 1 < tpl->slen && tpl->s[k + 1] == '[') { int e = k + 2; while (e < tpl->slen && tpl->s[e] != ']') e++;
+      char nm[64]; snprintf(nm, sizeof nm, "%.*s", e - k - 2, tpl->s + k + 2); char *mod = strchr(nm, ':'); if (mod) *mod++ = 0;
+      int hit = -1; for (int i = 0; i < m; i++) if (!strcmp(((Node *)n->list.a[i])->s, nm)) { hit = i; break; }
+      if (hit < 0) die("%s:%d: asm: unknown operand %%[%s]", n->tok->file, n->tok->line, nm);
+      int zi = asz_idx(ty[hit]); if (mod && *mod == 'q') zi = 0; else if (mod && *mod == 'k') zi = 1; else if (mod && *mod == 'w') zi = 2; else if (mod && *mod == 'b') zi = 3;
+      fprintf(f, "%%%s", areg[reg[hit]][zi]); k = e; continue; }
+    fputc(ch, f); if (ch == '\n') fputc('\t', f); }
+  fputc('\n', f);
+  int nout = 0; for (int i = 0; i < m; i++) if (dir[i] == 0) { fprintf(f, "\tpush %%%s\n", areg[reg[i]][0]); nout++; }
+  fprintf(f, "\tmovq %d(%%rsp), %%r11\n", 8 * nout);
+  for (int i = m - 1; i >= 0; i--) if (dir[i] == 0) fprintf(f, "\tpop %%rax\n\tmovq %%rax, %d(%%r11)\n", 8 * i);
+  fprintf(f, "\tadd $8, %%rsp\n\tpop %%r15\n\tpop %%r14\n\tpop %%r13\n\tpop %%r12\n\tpop %%rbp\n\tpop %%rbx\n\tret\n");
+  Val ret = VOIDV();
+  for (int i = 0; i < m; i++) if (dir[i] == 0) { char *a = addp(buf, 8 * i);
+    if (((Node *)n->list.a[i])->flags & F_REF) ret = V(ty[i], load(ty[i], a)); else put(V(ty[i], load(ty[i], a)), ty[i], lvs[i].op); }
+  return ret;
+}
 static Val gen_asm(Node *n, Scope *s) {
   CVal tpl; if (!ceval(n->a, s, &tpl) || tpl.k != CV_STR) die("%s:%d: asm template must be a string", n->tok->file, n->tok->line);
   Type *rt = t_void;
@@ -2176,6 +2286,7 @@ static Val gen_asm(Node *n, Scope *s) {
     if (rt == t_void) return VOIDV();
     return coerce(V(t_u64, r), rt);
   }
+  Val gv = gen_asm_stub(n, s, &tpl, rt); if (gv.t) return gv;
   fprintf(stderr, "zb: warning: %s:%d: unsupported inline asm \"%.*s\" compiled as a trap\n", n->tok->file, n->tok->line, tpl.slen > 40 ? 40 : tpl.slen, tpl.s);
   emit("hlt"); term = 1; return NORET();
 }
@@ -2250,6 +2361,7 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     if (v.ck && v.cv.k == CV_FLOAT) { v.cv.f = -v.cv.f; return v; }
     if (v.ck && v.cv.k == CV_INT) { if (op[0] == '~') { if (ex && v.t->k == TY_CINT) v = coerce(v, ex); v.cv.i = wrap_int(~v.cv.i, v.t); } else v.cv.i = wrap_int(-v.cv.i, v.t); return v; }
     if (is_wide(v.t)) { if (op[0] == '~') { char *a = tmp(), *b2 = tmp(); emit("%s =l xor %s, -1", a, wlo(v)); emit("%s =l xor %s, -1", b2, whi(v)); return w_from_parts(v.t, a, b2); } CVal z = {0}; z.k = CV_INT; z.t = v.t; return w_arith("-", v.t, CK(z), v); }
+    if (is_bigf(v.t)) return V(v.t, bigf_op(8, v.t, opnd(v), NULL));
     char *r = tmp();
     if (op[0] == '~') { emit("%s =%c xor %s, -1", r, qc(v.t), opnd(v)); return V(v.t, norm(r, v.t)); }
     emit("%s =%c neg %s", r, qc(v.t), opnd(v)); return V(v.t, norm(r, v.t));
@@ -2304,7 +2416,9 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     }
     int cmp = !strcmp(op, "==") || !strcmp(op, "!=") || !strcmp(op, "<") || !strcmp(op, ">") || !strcmp(op, "<=") || !strcmp(op, ">=");
     Val a = rv(gen(n->a, s, cmp ? NULL : ex));
-    Val b = rv(gen(n->b, s, cmp ? (a.t->k == TY_CINT || a.t->k == TY_ENUMLIT ? NULL : a.t) : (a.t->k == TY_CINT ? ex : (a.t->k == TY_MPTR ? t_usize : a.t))));
+    Type *bh = cmp ? (a.t->k == TY_CINT || a.t->k == TY_ENUMLIT ? NULL : a.t) : (a.t->k == TY_CINT ? ex : (a.t->k == TY_MPTR ? t_usize : a.t));
+    if (bh && !cmp && (n->b->k == N_SWITCH || n->b->k == N_IF) && !in_typeof) { Type *bt = typeof_impl(n->b, s); if (bt && (bt->k == TY_INT || bt->k == TY_FLOAT) && bt != bh) bh = NULL; }
+    Val b = rv(gen(n->b, s, bh));
     if (a.ck && a.t->k == TY_CINT && b.t->k == TY_CINT && !b.ck) a = coerce(a, t_i64);
     if (cmp && !a.ck && a.t->k == TY_INT && b.ck && b.cv.k == CV_INT) { CVal raw; if (ceval(n->b, s, &raw) && raw.k == CV_INT && cv_typeof(&raw)->k == TY_CINT) b = CK(raw); }
     if (cmp) return gen_cmp(op, a, b);

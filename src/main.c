@@ -37,11 +37,12 @@ int main(int argc, char **argv) {
   if (!lib_dir) { char *self = realpath(argv[0], NULL); if (!self) self = realpath("/proc/self/exe", NULL); char *sl = strrchr(self, '/'); *sl = 0; lib_dir = fmt("%s/lib", self); }
   if (stddir && *stddir) {
     char *rd = realpath(stddir, NULL); if (!rd) die("--std-dir: cannot open %s", stddir);
-    std_file = fmt("%s/std.zig", rd); std_builtin_file = fmt("%s/builtin.zig", rd);
-    builtin_file = fmt("%s/builtin_std.zig", lib_dir); using_real_std = 1;
+    std_file = fmt("%s/std.zig", rd); std_builtin_file = fmt("%s/builtin.zig", rd); if (access(std_builtin_file, R_OK)) std_builtin_file = fmt("%s/lang.zig", rd); /* 0.17: std.builtin -> std.lang */
+    builtin_file = fmt(strstr(std_builtin_file, "/lang.zig") ? "%s/builtin_std17.zig" : "%s/builtin_std.zig", lib_dir); using_real_std = 1;
   }
   if (!std_file) { std_file = fmt("%s/std.zig", lib_dir); std_builtin_file = fmt("%s/std/builtin.zig", lib_dir); builtin_file = fmt("%s/builtin.zig", lib_dir); }
   if (getenv("ZB_PARSE_ONLY")) { parse_file(in); return 0; }
+  { extern FILE *asm_out; if (o) { asm_out = fopen(fmt("%s.asm.s", o), "w"); if (!asm_out) die("cannot write %s.asm.s", o); } }
   outf = o ? fopen(o, "w") : stdout; if (!outf) die("cannot write %s", o);
   types_init(); gen_init_buffers();
   root_dir = realpath(in, NULL); if (!root_dir) die("cannot open %s", in);
@@ -60,6 +61,6 @@ int main(int argc, char **argv) {
   gen_all();
   if (mi) gen_main_wrapper(mi, start_glue);
   gen_finish();
-  if (o) fclose(outf);
+  if (o) { extern FILE *asm_out; fclose(outf); fclose(asm_out); }
   return 0;
 }

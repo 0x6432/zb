@@ -40,19 +40,19 @@ jobs:
           make -C qbe-$QBE_VERSION -j$(nproc)
           mkdir -p ../zig-0.16.0 && cp -r zig-$ZIG_VERSION/lib ../zig-0.16.0/   # std used by zb's own tests
       - name: Build zb and run zb tests
-        run: ci/bootstrap.sh zb
+        run: bash ci/bootstrap.sh zb
         env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
       - name: zb compiles the Zig compiler -> zig2
-        run: ci/bootstrap.sh zig2
+        run: bash ci/bootstrap.sh zig2
         env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
       - name: Bootstrap stages zig2 -> zig3 -> zig4
-        run: ci/bootstrap.sh stages
+        run: bash ci/bootstrap.sh stages
         env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe, JOBS: 2 }
       - name: Binary comparison (fixed point)
-        run: ci/bootstrap.sh compare
+        run: bash ci/bootstrap.sh compare
         env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
       - name: Zig's own build system and tools (stage3)
-        run: ci/bootstrap.sh stage3
+        run: bash ci/bootstrap.sh stage3
         continue-on-error: true
         env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
       - name: Upload artifacts
