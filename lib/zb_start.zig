@@ -9,7 +9,8 @@ pub fn zbMain(argc: usize, argv: [*][*:0]u8, envp: [*:null]?[*:0]u8) u8 {
     const env_block: std.process.Environ.Block = .{ .slice = envp[0..envc :null] };
     const args = argv[0..argc];
     const fn_info = @typeInfo(@TypeOf(root.main)).@"fn";
-    if (fn_info.params[0].type.? == std.process.Init.Minimal) return wrapMain(root.main(.{
+    const P0 = if (@hasField(@TypeOf(fn_info), "params")) fn_info.params[0].type.? else fn_info.param_types[0].?;
+    if (P0 == std.process.Init.Minimal) return wrapMain(root.main(.{
         .args = .{ .vector = args },
         .environ = .{ .block = env_block },
     }));

@@ -32,7 +32,7 @@ build_zig2() {
 }
 
 selfc() { # selfc BIN OUT.c
-  (cd "$ZIGSRC" && "$1" build-exe -ofmt=c -lc -OReleaseSmall --name zig2 -femit-bin="$2" -target x86_64-linux --zig-lib-dir lib \
+  (cd "$ZIGSRC" && "$1" build-exe -j1 -ofmt=c -lc -OReleaseSmall --name zig2 -femit-bin="$2" -target x86_64-linux --zig-lib-dir lib \
      --dep build_options --dep aro -Mroot=src/main.zig -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig)
 }
 stagebin() { # stagebin IN.c OUTBIN : split + cc + link
@@ -45,7 +45,7 @@ stagebin() { # stagebin IN.c OUTBIN : split + cc + link
 }
 hello() { # hello BIN
   printf 'const std = @import("std");\npub fn main() void {\n    var x: u32 = 6;\n    _ = &x;\n    std.debug.print("hello {d}\\n", .{x * 7});\n}\n' > "$WORK/hello.zig"
-  (cd "$ZIGSRC" && "$1" build-exe -ofmt=c -lc -OReleaseSmall --name hello -femit-bin="$WORK/hello.c" -target x86_64-linux --zig-lib-dir lib "$WORK/hello.zig")
+  (cd "$ZIGSRC" && "$1" build-exe -j1 -ofmt=c -lc -OReleaseSmall --name hello -femit-bin="$WORK/hello.c" -target x86_64-linux --zig-lib-dir lib "$WORK/hello.zig")
   cc -w -I"$ZIGSRC/lib" -o "$WORK/hello" "$WORK/hello.c"; "$WORK/hello" 2>&1 | tee "$WORK/hello.out"; grep -q "hello 42" "$WORK/hello.out"
 }
 
