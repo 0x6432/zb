@@ -1,0 +1,12 @@
+len=5 scaled=.{ .x = 1.5, .y = 2 }
+mean=2.4166667
+a=-4.5 neg=4.5 abs=4.5
+i=-4 u=7 back=-0.5
+cmp true true true true
+third=0.3333333333333333 f32=0.33333334 table={ 0, 0.5, 1, 1.5, 2 }
+sci=1.2345e3 prec=3.142 width=[     2.5]
+bits=c000000000000000 fb=3.1415927
+floor=-2 ceil=-1 round=3 trunc=-2
+inf=inf ninf=-inf nan=true
+wide=0.10000000149011612 narrow=10000000000 rem=1.5
+exit=0

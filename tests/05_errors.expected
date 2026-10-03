@@ -1,0 +1,9 @@
+42
+BadDigit
+0
+99
+123
+errdefer Boom
+2
+error: BadDigit
+exit=1

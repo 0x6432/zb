@@ -1,0 +1,9 @@
+add:10 sub:4 mul:21 neg:-7 
+30 -5 
+int=42 boolean=true text=hi nothing 
+byte signed bool other
+321
+111
+other 7
+{ .add, .neg }
+exit=0

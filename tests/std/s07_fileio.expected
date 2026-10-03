@@ -1,0 +1,6 @@
+0: line one
+1: line two
+2: line three
+{ 16, 16, 15, 15, 13, 13, 9, 9, 8, 8, 4, 4, 4, 2, 2, 1, 1, 1, 0, 0 }
+path set: true
+exit=0

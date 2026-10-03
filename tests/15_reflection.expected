@@ -1,0 +1,14 @@
+name level verbose 
+true false true
+decls=2 fields=3
+.{ .x = 1, .y = 2, .z = 3 } size=12
+20 mid
+default 3 false
+.{ 9, true } 2
+12 4095
+abc true
+u32 ?bool
+4 true 0
+13
+16 8
+exit=0

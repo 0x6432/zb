@@ -1,0 +1,5 @@
+identifier:foo plus:+ number:42 star:* l_paren:( identifier:bar_1 minus:- number:7 r_paren:) invalid:$ 
+20
+20
+UnexpectedToken
+exit=0

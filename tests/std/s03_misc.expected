@@ -1,0 +1,9 @@
+   42|00ff|hi|z
+[a][bb][ccc]
+sum=102
+eql=true idx=6
+.{ .x = 3, .y = -4 } green .blue
+max=65535 min=-2
+pear=2 kiwi=null
+err=error.Overflow
+exit=0

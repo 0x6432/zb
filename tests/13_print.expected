@@ -1,0 +1,17 @@
+ints: -42 200 123 ff FF 101 10
+strings: hello|world|Z
+bool: true false
+opt: 5 null 5
+enum: .green blue 2
+struct: .{ .x = 1, .y = -2 }
+tuple: .{ 1, true }
+union: .{ .circle = 9 } .{ .rect = .{ .w = 3, .h = 4 } }
+array: { 1, 2, 3 } { 1, 2, 3 }
+err: 7 error.Bad error.Oops
+width: [   42] [42   ] [ 42  ] [0007] [    ab] [005]
+braces: {} {1}
+bufPrint: abc-99 len=6
+maxInt: 255 32767 -128
+runtime: 285
+to stderr 1
+exit=0

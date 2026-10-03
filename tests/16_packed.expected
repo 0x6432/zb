@@ -1,0 +1,9 @@
+false true 5 22
+true 2 7 0xeb
+0xbeef4003 4 32
+1 1383 0x1234
+.{ .a = true, .b = true, .mode = 7, .rest = 7 }
+true
+1 blue -13 0xce06
+true 1 green
+exit=0
