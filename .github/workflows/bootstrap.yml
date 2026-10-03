@@ -59,16 +59,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bootstrap-artifacts
+          name: build-${{ github.run_number }}-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
           path: |
-            work/SHA256SUMS
-            work/zig2
-            work/zig3
-            work/zig4
-            work/compiler_rt.c
-          if-no-files-found: ignore
-      - name: Tag progress
-        if: success()
-        run: |
-          tag=$(cat PROGRESS_TAG)
-          git tag -l "$tag" | grep -q . || { git tag "$tag" && git push origin "$tag"; }
+            work/
+            !work/zig-0.16.0/
+            !work/qbe-1.2/
+            !work/*.tar.*
+            build/
+            zb
