@@ -116,3 +116,8 @@ inline asm beyond syscall; assembler "value truncated" warnings.
 ## 0.17 language audit (release notes) — done
 - Covered by tests/std17 (run automatically when /data/zig17-src/lib/std exists, override STD17=): @hasDecl pub-only (global `zig17` flag set when std has lang.zig), slice.* / slice -> *[N]T for comptime-length slices, union(enum(T)) explicit tag values, @backingInt/@fromBackingInt/@divCeil, 0.17 @bitCast logical bit representation (runtime lbitcast in gen.c + zbrt.c zb_bitput/zb_bitget; comptime cflat/cunflat in ct.c), enum(noreturn) {}.
 - Removed syntax (`**`, void{}, errdefer capture, i0, internal/link_once) needs no work for valid input.
+
+## Session: @export/@extern/@cVa*/@prefetch + precise error sets (backup-01)
+- Done: @export (renames fn sym / var sym via Decl.xname; top-level comptime blocks now kept as N_COMPTIME decls and evaluated in main), @extern, @cVaStart/Arg/Copy/End (QBE vastart/vaarg; variadic fn defs emit `...`), @prefetch (no-op).
+- Error sets: TY_ERRSET now has ct (fields = names) for named sets (interned structurally), `||` merges, TY_ERRU carries set in t->ret (erru_of2). Inferred sets (!T) collect entries during gen (coerce hook note_err, gen_try) and resolve lazily via eset_resolve (re-entrant gen_fn). Name order of merged sets may differ from real Zig (it uses global string-intern order).
+- Verified: tests 37/37; 0.17 bootstrap still byte-identical. 0.16: zig2 self output differs from old zig4 only by f128 constant precision (zig4 predates the f128 fix; new output is the more precise one). TODO: rebuild zig3 from /data/zig2b_self.c via stage.sh to reconfirm 0.16 fixed point.

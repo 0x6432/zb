@@ -407,7 +407,7 @@ int ceval_member(CVal base, const char *name, CVal *out) {
       if (t->k == TY_ENUM) { int64_t v; if (enum_val(t, name, &v)) { *out = cv_int(v, t); return 1; } }
       if (t->k == TY_UNION && t->ct->tagged) { int64_t v; layout(t->ct); if (enum_val(t, name, &v)) { *out = cv_int(v, t->ct->tag); return 1; } }
     }
-    if (t->k == TY_ERRSET) { CVal v = {0}; v.k = CV_ERR; v.i = err_id(name); v.t = t_errset; *out = v; return 1; }
+    if (t->k == TY_ERRSET) { CVal v = {0}; v.k = CV_ERR; v.i = err_id(name); v.t = t; *out = v; return 1; }
     return 0;
   }
   if (base.k == CV_STR) {
@@ -722,7 +722,7 @@ static int is_local_array(Scope *s, Node *n, Type **at) {
 static int fn_ret_type(Decl *fd, Scope *fs, Type **rt) {
   Node *f = fd->node; CVal tv; ct_force++; int r = ev(f->a, fs, &tv); ct_force--;
   if (r != R_OK || tv.k != CV_TYPE) return 0;
-  *rt = tv.t; if (f->flags & F_INFERR) *rt = erru_of(*rt);
+  *rt = tv.t; if (f->flags & F_INFERR) *rt = erru_of2(*rt, fn_is_generic(f) ? NULL : decl_iset(fd));
   return 1;
 }
 int fn_returns_ctonly(Decl *fd) {
@@ -1129,7 +1129,7 @@ static int ev_(Node *n, Scope *s, CVal *out) {
   case N_UNDEF: *out = cv_undef(NULL); return R_OK;
   case N_ENUMLIT: *out = cv_enumlit(n->s); return R_OK;
   case N_ERRVAL: { CVal v = {0}; v.k = CV_ERR; v.i = err_id(n->s); v.t = t_errset; *out = v; return R_OK; }
-  case N_ERRSET: for (int i = 0; i < n->list.n; i++) err_id(((Node *)n->list.a[i])->s); *out = cv_ty(t_errset); return R_OK;
+  case N_ERRSET: { Vec nm = {0}; for (int i = 0; i < n->list.n; i++) { err_id(((Node *)n->list.a[i])->s); vpush(&nm, ((Node *)n->list.a[i])->s); } *out = cv_ty(errset_named((char **)nm.a, nm.n)); return R_OK; }
   case N_UNREACHABLE:
     if (ct_force) die("%s:%d: reached unreachable code at comptime", n->tok->file, n->tok->line);
     return R_FAIL;
@@ -1235,7 +1235,7 @@ static int ev_(Node *n, Scope *s, CVal *out) {
       EV(n->b, s, &b); if (b.k != CV_BOOL) return R_FAIL; *out = b; return R_OK;
     }
     EV(n->a, s, &a); EV(n->b, s, &b);
-    if (!strcmp(op, "||")) { *out = cv_ty(t_errset); return R_OK; }
+    if (!strcmp(op, "||")) { if (a.k != CV_TYPE || b.k != CV_TYPE) return R_FAIL; *out = cv_ty(errset_merge(a.t, b.t)); return R_OK; }
     return ev_bin(op, a, b, out);
   }
   case N_ORELSE:
@@ -1383,7 +1383,7 @@ static int ev_(Node *n, Scope *s, CVal *out) {
   case N_TERRU: {
     ct_force++; int r = ev(n->a, s, &a); if (r == R_OK) r = ev(n->b, s, &b); ct_force--;
     if (r != R_OK) return r; if (b.k != CV_TYPE) return R_FAIL;
-    *out = cv_ty(erru_of(b.t)); return R_OK;
+    *out = cv_ty(erru_of2(b.t, a.k == CV_TYPE ? a.t : NULL)); return R_OK;
   }
   case N_TFN: {
     Vec ps = {0};
@@ -1667,7 +1667,12 @@ static CVal type_info17(Type *T, const char **tagp) {
     setf(&pay, "field_names", names_val(st, "field_names", T->ct, 0)); setf(&pay, "field_types", slice_val(ftype(st, "field_types"), ts, n));
     setf(&pay, "field_attrs", slice_val(ft, as, n)); setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1)); break;
   }
-  case TY_ERRSET: { tag = "error_set"; Type *st = bt_type("Type.ErrorSet"); pay = mk_struct(st); setf(&pay, "error_names", cv_null()); break; }
+  case TY_ERRSET: { tag = "error_set"; Type *st = bt_type("Type.ErrorSet"); pay = mk_struct(st);
+    if (is_inferred_eset(T)) eset_resolve(T);
+    if (!T->ct || T->ct->ianyerr) { setf(&pay, "error_names", cv_null()); break; }
+    Type *ot = ftype(st, "error_names"), *slt = ot->k == TY_OPT ? ot->elem : ot; int n = T->ct->fields.n; CVal *arr = xalloc(sizeof(CVal) * (n + 1));
+    for (int i = 0; i < n; i++) arr[i] = zstr(((Field *)T->ct->fields.a[i])->name);
+    setf(&pay, "error_names", slice_val(slt, arr, n)); break; }
   case TY_OPAQUE: { tag = "opaque"; Type *st = bt_type("Type.Opaque"); pay = mk_struct(st); setf(&pay, "decl_names", names_val(st, "decl_names", T->ct, 1)); break; }
   case TY_FN: case TY_ANYTYPE: {
     tag = "fn"; Type *st = bt_type("Type.Fn"); pay = mk_struct(st); int gen = T->k == TY_ANYTYPE;
@@ -1737,8 +1742,12 @@ static CVal type_info(Type *T) {
     setf(&pay, "fields", slice_val(ft, fs, n)); setf(&pay, "decls", decls_val(st, T->ct)); break;
   }
   case TY_OPT: tag = "optional"; pay = mk_struct(bt_type("Type.Optional")); setf(&pay, "child", cv_ty(T->elem)); break;
-  case TY_ERRU: tag = "error_union"; pay = mk_struct(bt_type("Type.ErrorUnion")); setf(&pay, "error_set", cv_ty(t_errset)); setf(&pay, "payload", cv_ty(T->elem)); break;
-  case TY_ERRSET: tag = "error_set"; pay = cv_null(); break;
+  case TY_ERRU: tag = "error_union"; pay = mk_struct(bt_type("Type.ErrorUnion")); setf(&pay, "error_set", cv_ty(eset_of(T))); setf(&pay, "payload", cv_ty(T->elem)); break;
+  case TY_ERRSET: tag = "error_set"; if (is_inferred_eset(T)) eset_resolve(T);
+    if (!T->ct || T->ct->ianyerr) { pay = cv_null(); break; }
+    { Type *ot = bt_type("Type.ErrorSet"), *slt = ot->k == TY_OPT ? ot->elem : ot; int n = T->ct->fields.n; CVal *fs = xalloc(sizeof(CVal) * (n + 1));
+      for (int i = 0; i < n; i++) { fs[i] = mk_struct(slt->elem); setf(&fs[i], "name", zstr(((Field *)T->ct->fields.a[i])->name)); }
+      pay = slice_val(slt, fs, n); } break;
   case TY_OPAQUE: tag = "opaque"; { Type *st = bt_type("Type.Opaque"); pay = mk_struct(st); setf(&pay, "decls", decls_val(st, T->ct)); } break;
   case TY_FN: {
     tag = "fn"; Type *st = bt_type("Type.Fn"); pay = mk_struct(st);
@@ -1902,7 +1911,7 @@ static int ev_builtin(Node *n, Scope *s, CVal *out) {
       if (r == R_OK && v.k == CV_FN && !v.t && !fn_is_generic(v.fn->node)) {
         Node *f = v.fn->node; Vec ps = {0}; Scope *fs = v.fn->ct->scope;
         for (int j = 0; j < f->list.n; j++) { Node *p = f->list.a[j]; if (p->flags & F_VARARGS) continue; vpush(&ps, eval_type(p->a, fs)); }
-        Type *rr = eval_type(f->a, fs); if (f->flags & F_INFERR) rr = erru_of(rr);
+        Type *rr = eval_type(f->a, fs); if (f->flags & F_INFERR) rr = erru_of2(rr, decl_iset(v.fn));
         t = fn_type(&ps, rr, !!(f->flags & F_VARARGS));
       } else if (r == R_OK && v.k != CV_UNDEF) t = cv_typeof(&v);
       else { ct_force = sf; t = typeof_hook(n->list.a[i], s); ct_force = 0; }
@@ -1920,6 +1929,14 @@ static int ev_builtin(Node *n, Scope *s, CVal *out) {
     *out = cv_int(B("offsetOf") ? (is_packed(T) ? f->bitoff / 8 : f->off) : (is_packed(T) ? f->bitoff : f->off * 8), t_cint); return R_OK;
   }
   if (B("FieldType")) { TY(x, T); EV(y, s, &b); Field *f = find_field(T->ct, cv_cstr(&b, NULL)); if (!f) die("@FieldType: no field"); *out = cv_ty(f->t); return R_OK; }
+  if (B("export")) { EV(y, s, &b);
+    { Type *ot0 = cv_typeof(&b); int fi0 = field_index(ot0, "name"); Node *xx = x; if (xx->k == N_UN && xx->s && !strcmp(xx->s, "&")) xx = xx->a; Decl *dd = NULL;
+      if (fi0 >= 0 && xx->k == N_IDENT) for (Scope *sc = s; sc && !dd; sc = sc->up) if (sc->ct) dd = find_decl(sc->ct, xx->s);
+      if (dd && dd->node->k == N_VAR && !(dd->node->flags & F_CONST) && dd->state == 0) { dd->xname = cv_cstr(b.el[fi0], NULL); dd->node->flags |= F_EXPORT; resolve_decl(dd); } }
+    EV(x, s, &a); ExportReq *er = xalloc(sizeof *er); er->v = a; er->node = x; er->scope = s;
+    Type *ot = cv_typeof(&b); int fi = field_index(ot, "name"); if (fi < 0) return R_FAIL; er->name = cv_cstr(b.el[fi], NULL);
+    fi = field_index(ot, "linkage"); if (fi >= 0 && b.el[fi]->k == CV_INT) { Type *lt = cv_typeof(b.el[fi]); if (lt && lt->ct) for (int i = 0; i < lt->ct->fields.n; i++) { Field *f = lt->ct->fields.a[i]; if (f->val == (int64_t)b.el[fi]->i && !strcmp(f->name, "weak")) er->weak = 1; } }
+    vpush(&zb_exports, er); *out = cv_void(); return R_OK; }
   if (B("hasDecl")) { TY(x, T); EV(y, s, &b); char *nm = cv_cstr(&b, NULL); Decl *hd = T->ct ? find_decl(T->ct, nm) : NULL; *out = cv_bool(hd && (!zig17 || (hd->node->flags & F_PUB))); return R_OK; }
   if (B("hasField")) {
     TY(x, T); EV(y, s, &b); char *nm = cv_cstr(&b, NULL);

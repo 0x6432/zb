@@ -41,7 +41,43 @@ Type *slice_of_s(Type *t, int c, int hs, int64_t sent) { return derived(TY_SLICE
 Type *array_of(Type *t, int64_t n, int hs, int64_t s) { return derived(TY_ARRAY, t, 0, n, hs, s); }
 Type *vec_of(Type *t, int64_t n) { return derived(TY_ARRAY, t, 2, n, 0, 0); }
 Type *opt_of(Type *t) { return derived(TY_OPT, t, 0, 0, 0, 0); }
-Type *erru_of(Type *t) { return derived(TY_ERRU, t, 0, 0, 0, 0); }
+Type *erru_of(Type *t) { return erru_of2(t, NULL); }
+Type *erru_of2(Type *t, Type *es) {
+  if (es == t_errset) es = NULL;
+  for (int i = 0; i < types.n; i++) { Type *x = types.a[i]; if (x->k == TY_ERRU && x->elem == t && x->ret == es) return x; }
+  Type *n = mkt(TY_ERRU); n->elem = t; n->ret = es; return n;
+}
+Type *eset_of(Type *eu) { return eu && eu->k == TY_ERRU && eu->ret ? eu->ret : t_errset; }
+static Type *errset_new(void) { Type *t = mkt(TY_ERRSET); Container *c = xalloc(sizeof *c); c->type = t; c->laid = 1; t->ct = c; return t; }
+static int eset_has(Container *c, const char *nm) { for (int i = 0; i < c->fields.n; i++) if (!strcmp(((Field *)c->fields.a[i])->name, nm)) return 1; return 0; }
+static void eset_push(Container *c, char *nm) { if (eset_has(c, nm)) return; Field *f = xalloc(sizeof *f); f->name = nm; f->val = err_id(nm); f->t = c->type; vpush(&c->fields, f); }
+Type *errset_named(char **names, int n) {
+  for (int i = 0; i < types.n; i++) { Type *x = types.a[i]; if (x->k != TY_ERRSET || !x->ct || x->ct->infer_d || x->ct->infer_fi) continue;
+    Container *c = x->ct; int uniq = 0; for (int j = 0; j < n; j++) { int dup = 0; for (int k = 0; k < j; k++) if (!strcmp(names[j], names[k])) dup = 1; if (!dup) uniq++; }
+    if (c->fields.n != uniq) continue; int ok = 1; for (int j = 0; ok && j < n; j++) if (!eset_has(c, names[j])) ok = 0; if (ok) return x; }
+  Type *t = errset_new(); for (int j = 0; j < n; j++) eset_push(t->ct, names[j]);
+  { char *r = "error{"; for (int i = 0; i < t->ct->fields.n; i++) r = fmt("%s%s%s", r, i ? "," : "", ((Field *)t->ct->fields.a[i])->name); t->ct->name = fmt("%s}", r); } return t;
+}
+int is_inferred_eset(Type *t) { return t && t->k == TY_ERRSET && t->ct && (t->ct->infer_d || t->ct->infer_fi); }
+Type *errset_merge(Type *a, Type *b) {
+  if (is_inferred_eset(a)) eset_resolve(a); if (is_inferred_eset(b)) eset_resolve(b);
+  if (!a->ct || !b->ct || a->ct->ianyerr || b->ct->ianyerr) return t_errset;
+  Vec nm = {0}; for (int i = 0; i < a->ct->fields.n; i++) vpush(&nm, ((Field *)a->ct->fields.a[i])->name); for (int i = 0; i < b->ct->fields.n; i++) vpush(&nm, ((Field *)b->ct->fields.a[i])->name);
+  return errset_named((char **)nm.a, nm.n);
+}
+typedef struct { char *name; Type *set; } IEnt;
+Type *errset_infer(void) { return errset_new(); }
+Type *decl_iset(Decl *d) { if (!d->iset) { d->iset = errset_infer(); d->iset->ct->infer_d = d; d->iset->ct->name = fmt("@typeInfo(@typeInfo(@TypeOf(%s.%s)).@\"fn\".return_type.?).error_union.error_set", d->ct->name, d->name); } return d->iset; }
+void eset_add_name(Type *s, char *name) { Container *c = s->ct; for (int i = 0; i < c->ient.n; i++) { IEnt *e = c->ient.a[i]; if (e->name && !strcmp(e->name, name)) return; } IEnt *e = xalloc(sizeof *e); e->name = name; vpush(&c->ient, e); }
+void eset_add_set(Type *s, Type *o) { if (o == s) return; Container *c = s->ct; for (int i = 0; i < c->ient.n; i++) { IEnt *e = c->ient.a[i]; if (e->set == o) return; } IEnt *e = xalloc(sizeof *e); e->set = o; vpush(&c->ient, e); }
+void eset_flatten(Type *s) { /* called by gen after the owning fn is generated */
+  Container *c = s->ct;
+  for (int i = 0; i < c->ient.n; i++) { IEnt *e = c->ient.a[i];
+    if (e->name) { eset_push(c, e->name); continue; }
+    Type *o = e->set; if (o == t_errset || !o->ct) { c->ianyerr = 1; continue; }
+    if (is_inferred_eset(o)) eset_resolve(o);
+    if (o->ct->ianyerr) c->ianyerr = 1; for (int j = 0; j < o->ct->fields.n; j++) eset_push(c, ((Field *)o->ct->fields.a[j])->name); }
+}
 Type *fn_type(Vec *params, Type *ret, int va) {
   for (int i = 0; i < types.n; i++) {
     Type *t = types.a[i];
@@ -97,8 +133,10 @@ char *tname(Type *t) {
   case TY_ARRAY: if (is_vec(t)) return fmt("@Vector(%lld, %s)", (long long)t->len, tname(t->elem));
     if (t->hassent) return fmt("[%lld:%lld]%s", (long long)t->len, (long long)t->sent, tname(t->elem));
     return fmt("[%lld]%s", (long long)t->len, tname(t->elem));
-  case TY_OPT: return fmt("?%s", tname(t->elem)); case TY_ERRU: return fmt("anyerror!%s", tname(t->elem));
-  case TY_ERRSET: return "anyerror"; case TY_TYPE: return "type"; case TY_FN: return "fn";
+  case TY_OPT: return fmt("?%s", tname(t->elem)); case TY_ERRU: return fmt("%s!%s", tname(eset_of(t)), tname(t->elem));
+  case TY_ERRSET: if (!t->ct) return "anyerror"; if (t->ct->name) return t->ct->name;
+    if (t->ct->infer_d || t->ct->infer_fi) { Decl *d = t->ct->infer_d ? t->ct->infer_d : ((FnInst *)t->ct->infer_fi)->d; return fmt("@typeInfo(@typeInfo(@TypeOf(%s.%s)).@\"fn\".return_type.?).error_union.error_set", d->ct->name, d->name); }
+    { char *r = "error{"; for (int i = 0; i < t->ct->fields.n; i++) r = fmt("%s%s%s", r, i ? "," : "", ((Field *)t->ct->fields.a[i])->name); return fmt("%s}", r); } case TY_TYPE: return "type"; case TY_FN: return "fn";
   case TY_NULL: return "@TypeOf(null)"; case TY_UNDEF: return "@TypeOf(undefined)"; case TY_ENUMLIT: return "@TypeOf(.enum_literal)";
   default: return t->ct && t->ct->name ? t->ct->name : "anon";
   }
@@ -356,7 +394,7 @@ void resolve_decl(Decl *d) {
     }
     if (!t && !typeof_hook) die("%s:%d: global const '%s' is not comptime-known", n->tok->file, n->tok->line, d->name);
   }
-  d->kind = D_VAR; d->sym = mangle(fmt("%s.%s", d->ct->name, d->name));
+  d->kind = D_VAR; d->sym = d->xname ? d->xname : mangle(fmt("%s.%s", d->ct->name, d->name));
   d->t = t ? t : typeof_hook(n->b, s);
   if (d->t->k == TY_CINT) d->t = t_i64;
   if (n->b) {
@@ -434,7 +472,8 @@ FnInst *fn_instance(Decl *d, Vec *cargs) {
     if (p->s) bind_placeholder(fi->scope, p->s, pt);
     vpush(&fi->ptypes, pt);
   }
-  Type *r = eval_type(f->a, fi->scope); if (f->flags & F_INFERR) r = erru_of(r);
+  Type *r = eval_type(f->a, fi->scope);
+  if (f->flags & F_INFERR) { Type *is; if (generic) { is = errset_infer(); is->ct->infer_fi = fi; is->ct->name = fmt("@typeInfo(@typeInfo(@TypeOf(%s.%s)).@\"fn\".return_type.?).error_union.error_set", d->ct->name, d->name); } else { is = decl_iset(d); is->ct->infer_fi = fi; } r = erru_of2(r, is); }
   fi->ret = r;
   if (f->flags & F_EXTERN) fi->sym = d->name;
   else if (f->flags & F_EXPORT) fi->sym = d->name;

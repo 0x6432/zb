@@ -63,6 +63,7 @@ struct Container {
   Vec decls;  /* Decl* */
   Type *tag; int tagged; int laid; int laying; int packed; int is_tuple; int nonexh; int layout_kind; /* 0 auto 1 extern 2 packed */
   char *tagnames_sym;
+  void *infer_d, *infer_fi; Vec ient; int ianyerr, iresolved, iresolving; /* inferred error sets */
 };
 struct Type {
   int k, bits, sign, isconst, size, align;
@@ -91,11 +92,11 @@ enum { D_UNRES, D_FN, D_CONST, D_VAR, D_FIELDLESS };
 struct Decl {
   char *name; Node *node; Container *ct; int state; int kind;
   CVal cv; Type *t; char *sym; int emitted;
-  Vec insts; /* FnInst* for generic fns */ int has_init;
+  Vec insts; /* FnInst* for generic fns */ int has_init; Type *iset; char *xname;
 };
 typedef struct FnInst {
   Decl *d; Node *node; char *sym; Scope *scope; /* comptime bindings */
-  Type *ty; Vec cargs; /* CVal* */ int queued, done, is_method_self;
+  Type *ty; Vec cargs; /* CVal* */ int queued, done, is_method_self, exported;
   Vec ptypes; Type *ret;
   struct FnInst *from; Node *from_node;
 } FnInst;
@@ -127,7 +128,10 @@ Type *slice_of(Type *t, int isconst);
 Type *slice_of_s(Type *t, int isconst, int hs, int64_t sent);
 Type *array_of(Type *t, int64_t n, int hassent, int64_t sent);
 Type *opt_of(Type *t);
-Type *erru_of(Type *t);
+Type *erru_of(Type *t); Type *erru_of2(Type *t, Type *es); Type *eset_of(Type *eu);
+Type *errset_named(char **names, int n); Type *errset_merge(Type *a, Type *b); Type *errset_infer(void); Type *decl_iset(Decl *d);
+void eset_add_name(Type *s, char *name); void eset_add_set(Type *s, Type *o); int is_inferred_eset(Type *t);
+void eset_resolve(Type *s); extern Vec errnames;
 Type *fn_type(Vec *params, Type *ret, int varargs);
 int is_int(Type *t); int is_scalar(Type *t); int is_aggr(Type *t);
 int opt_is_ptr(Type *t);
@@ -208,3 +212,5 @@ extern FILE *outf;
 CVal *cell_parent(CVal *c, int *fi);
 
 extern int zig17;
+typedef struct { CVal v; char *name; int weak; Node *node; Scope *scope; } ExportReq; extern Vec zb_exports;
+void gen_exports(void);

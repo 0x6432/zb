@@ -1,5 +1,5 @@
 #include "zb.h"
-int zig17;
+int zig17; Vec zb_exports;
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -53,6 +53,8 @@ int main(int argc, char **argv) {
     Decl *d = root->decls.a[i];
     if (d->node->k == N_FN && (d->node->flags & F_EXPORT)) { resolve_decl(d); Vec c = {0}; for (int j = 0; j < d->node->list.n; j++) vpush(&c, NULL); fn_instance(d, &c); }
   }
+  for (int i = 0; i < root->decls.n; i++) { Decl *d = root->decls.a[i]; if (d->node->k == N_COMPTIME) { CVal v; if (!ceval_force(d->node->a, root->scope, &v)) die("top-level comptime block failed"); } }
+  gen_exports();
   FnInst *mi = NULL;
   int start_glue = 0;
   if (md && using_real_std && md->node->k == N_FN && md->node->list.n > 0) {

@@ -4,3 +4,4 @@ m4-f128-asm-exact f80/f128 full precision + general inline asm: zig2 == zig3 mod
 m5-zig017-std Zig 0.17.0 std supported (std.lang, SoA typeInfo, backingInt, divCeil); tests pass on 0.17
 m5-zig017-bootstrap zb bootstraps Zig 0.17.0: zb-built zig2 and gcc-built zig3 self-compile byte-identically (-j1)
 m6-zig017-lang-audit 0.17 release-note language changes covered by tests/std17; 0.17 bootstrap still byte-identical
+backup-01 export/cVa/prefetch builtins + precise error sets; 0.17 fixed point holds

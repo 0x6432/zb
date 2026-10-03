@@ -447,8 +447,15 @@ static Val lbitcast(Val v, Type *ex) {
   char *sl = slot(ex); emit("call $memset(l %s, w 0, l %d)", sl, tsize(ex)); off = 0; lwalk(ex, sl, buf, &off, 0);
   return is_aggr(ex) ? V(ex, sl) : V(ex, load(ex, sl));
 }
+static void note_err(Type *S, Val v) {
+  if (!v.t) return;
+  if (v.ck && v.cv.k == CV_ERR && v.cv.t && v.cv.t->k == TY_ERRSET && v.cv.t->ct) { eset_add_set(S, v.cv.t); return; }
+  if (v.ck && v.cv.k == CV_ERR) { if (v.cv.i > 0 && v.cv.i <= errnames.n) eset_add_name(S, errnames.a[v.cv.i - 1]); return; }
+  if (v.t->k == TY_ERRSET) eset_add_set(S, v.t); else if (v.t->k == TY_ERRU) eset_add_set(S, eset_of(v.t));
+}
 static Val coerce(Val v, Type *to) {
   if (!to || v.t == to) return v;
+  if (to->k == TY_ERRU && is_inferred_eset(to->ret)) note_err(to->ret, v); else if (is_inferred_eset(to)) note_err(to, v);
   if (v.ck && v.cv.k == CV_SLICE && v.t && v.t->k == TY_SLICE && to->k == TY_PTR && to->elem->k == TY_ARRAY && to->elem->len == v.cv.slen && to->elem->elem == v.t->elem) {
     int64_t off; char *sym = ptr_parts(&v.cv, &off); if (sym) return V(to, addp(sym, off)); } /* 0.17: comptime-length slice -> *[N]T */
   if (v.ck && v.cv.k == CV_AGG && is_tuple_type(v.t) && (to->k == TY_STRUCT || to->k == TY_TUPLE || to->k == TY_ARRAY) && !is_packed(to)) {
@@ -1606,6 +1613,15 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
     Val m = coerce(gen(x, s, slice_of(t_u8, 1)), slice_of(t_u8, 1)); char *a = addr_of(m);
     char *p = load(t_u64, a), *l = load(t_u64, addp(a, 8)); emit("call $zb.panic(l %s, l %s)", p, l); emit("hlt"); term = 1; return NORET();
   }
+  if (!strcmp(b, "prefetch")) { gen(x, s, NULL); return VOIDV(); }
+  if (!strcmp(b, "extern")) { Type *t = eval_type(x, s); CVal o; if (!ceval_force(y, s, &o)) die("@extern options not comptime"); int fi = field_index(cv_typeof(&o), "name");
+    return V(t, fmt("$%s", cv_cstr(o.el[fi], NULL))); }
+  if (!strcmp(b, "cVaStart")) { Type *t = ex ? ex : bt_type_pub("VaList"); char *sl = slot(t); emit("vastart %s", sl); return V(t, sl); }
+  if (!strcmp(b, "cVaEnd")) { gen(x, s, NULL); return VOIDV(); }
+  if (!strcmp(b, "cVaCopy")) { Val p = rv(gen(x, s, NULL)); Type *t = p.t->elem; char *sl = slot(t); blit(opnd(p), sl, tsize(t)); return V(t, sl); }
+  if (!strcmp(b, "cVaArg")) { Val p = rv(gen(x, s, NULL)); Type *t = eval_type(y, s); char *r = tmp();
+    char q = t->k == TY_FLOAT ? (t->bits == 32 ? 's' : 'd') : (tsize(t) == 8 || t->k == TY_PTR || t->k == TY_MPTR || t->k == TY_OPT) ? 'l' : 'w';
+    emit("%s =%c vaarg %s", r, q, opnd(p)); return V(t, t->k == TY_FLOAT || q == 'l' ? r : norm(r, t)); }
   if (!strcmp(b, "trap") || !strcmp(b, "breakpoint")) { emit("hlt"); term = 1; return NORET(); }
   if (!strcmp(b, "field")) { Val base = gen(x, s, NULL); CVal nm; char *nms = ceval_force(y, s, &nm) ? cv_cstr(&nm, NULL) : NULL; if (!nms) die("%s:%d: @field name must be comptime-known string (at %s)", n->tok->file, n->tok->line, ct_fail_loc()); return gen_member(base, nms, n); }
   if (!strcmp(b, "unionInit")) {
@@ -1700,6 +1716,10 @@ static void cap_bind(Scope *s, char *name, int ref, Val payload) {
 }
 static Type *typeof_impl(Node *n, Scope *s);
 static int ptr_to_empty(Type *t) { return t->k == TY_PTR && ((t->elem->k == TY_ARRAY && t->elem->len == 0) || (is_tuple_type(t->elem) && (layout(t->elem->ct), t->elem->ct->fields.n == 0))); }
+static Type *peer_eset(Type *a, Type *b) {
+  if (a == b) return a; if (a == t_errset || b == t_errset || is_inferred_eset(a) || is_inferred_eset(b) || !a->ct || !b->ct) return t_errset;
+  return errset_merge(a, b);
+}
 static Type *peer_t(Type *a, Type *b) {
   if (!a) return b; if (!b) return a;
   if (a == b) return a;
@@ -1709,9 +1729,11 @@ static Type *peer_t(Type *a, Type *b) {
   if (a->k == TY_ENUMLIT && (b->k == TY_ENUM || b->k == TY_UNION || (b->k == TY_OPT && (b->elem->k == TY_ENUM || b->elem->k == TY_UNION)))) return b;
   if (b->k == TY_ENUMLIT && (a->k == TY_ENUM || a->k == TY_UNION || (a->k == TY_OPT && (a->elem->k == TY_ENUM || a->elem->k == TY_UNION)))) return a;
   if (a->k == TY_ERRSET && b->k == TY_ERRSET) return a;
-  if (a->k == TY_ERRSET) return b->k == TY_ERRU ? b : erru_of(b);
-  if (b->k == TY_ERRSET) return a->k == TY_ERRU ? a : erru_of(a);
-  if (a->k == TY_ERRU || b->k == TY_ERRU) { Type *e = peer_t(a->k == TY_ERRU ? a->elem : a, b->k == TY_ERRU ? b->elem : b); return e ? erru_of(e) : NULL; }
+  if (a->k == TY_ERRSET && b->k == TY_ERRSET) return peer_eset(a, b);
+  if (a->k == TY_ERRSET) return b->k == TY_ERRU ? erru_of2(b->elem, peer_eset(a, eset_of(b))) : erru_of2(b, a);
+  if (b->k == TY_ERRSET) return a->k == TY_ERRU ? erru_of2(a->elem, peer_eset(b, eset_of(a))) : erru_of2(a, b);
+  if (a->k == TY_ERRU || b->k == TY_ERRU) { Type *e = peer_t(a->k == TY_ERRU ? a->elem : a, b->k == TY_ERRU ? b->elem : b);
+    Type *es = a->k == TY_ERRU && b->k == TY_ERRU ? peer_eset(eset_of(a), eset_of(b)) : eset_of(a->k == TY_ERRU ? a : b); return e ? erru_of2(e, es) : NULL; }
   if (a->k == TY_CINT && (b->k == TY_INT)) return b; if (b->k == TY_CINT && a->k == TY_INT) return a;
   if (a->k == TY_INT && b->k == TY_INT) {
     if (a->sign == b->sign) return a->bits >= b->bits ? a : b;
@@ -1777,7 +1799,7 @@ static Val gen_if_erru(Node *n, Scope *s, Type *ex, Val cv) {
   label(lt); if (n->cap && cv.t->elem != t_void) cap_bind(ts, n->cap, n->capref, LV(cv.t->elem, addp(a, erru_off(cv.t))));
   else if (n->cap && strcmp(n->cap, "_")) bind_cval(ts, n->cap, cv_void());
   Val tv = gen(n->b, ts, n->c ? ex : NULL); res_put(&R, n->c || tv.t->k == TY_NORET ? tv : VOIDV()); jmp(lx);
-  label(lf); if (n->cap2) bind_val(es, n->cap2, V(t_errset, e));
+  label(lf); if (n->cap2) bind_val(es, n->cap2, V(eset_of(cv.t), e));
   if (n->c) { Val ev = gen(n->c, es, ex ? ex : R.collect ? NULL : R.t); res_put(&R, ev); } else res_put(&R, VOIDV());
   jmp(lx); label(lx); return res_get(&R);
 }
@@ -1802,7 +1824,7 @@ static Val gen_while(Node *n, Scope *s, Type *ex) {
     } else {
       char *a = addr_of(cv), *e = load(t_u16, a); br(e, le, lb);
       label(lb); if (cv.t->elem != t_void) cap_bind(bs, n->cap, n->capref, LV(cv.t->elem, addp(a, erru_off(cv.t)))); else if (strcmp(n->cap, "_")) bind_cval(bs, n->cap, cv_void());
-      if (n->cap2) bind_val(es, n->cap2, V(t_errset, e));
+      if (n->cap2) bind_val(es, n->cap2, V(eset_of(cv.t), e));
     }
   } else {
     Val cv = coerce(gen(n->a, s, t_bool), t_bool);
@@ -2126,7 +2148,8 @@ static Val ret_val(Val v, int noval) {
 }
 static Val gen_try(Node *n, Scope *s, Type *ex) {
   Val v = gen(n->a, s, ex && ex->k != TY_ERRU && ex->k != TY_ANYTYPE ? erru_of(ex) : NULL);
-  if (v.t->k == TY_ERRSET) { char *e = opnd(v); store(t_u16, e, fsret); run_defers(0, e); emit("ret"); term = 1; return NORET(); }
+  if (v.t->k == TY_ERRSET) { if (fret->k == TY_ERRU && is_inferred_eset(fret->ret)) eset_add_set(fret->ret, v.t); char *e = opnd(v); store(t_u16, e, fsret); run_defers(0, e); emit("ret"); term = 1; return NORET(); }
+  if (fret->k == TY_ERRU && is_inferred_eset(fret->ret) && v.t->k == TY_ERRU) eset_add_set(fret->ret, eset_of(v.t));
   if (v.t->k != TY_ERRU) return v; /* lenient: only reachable in code real Zig would not analyze (e.g. catch of an empty inferred error set) */
   char *a = addr_of(v), *e = load(t_u16, a), *le = newl(), *lo = newl();
   br(e, le, lo); label(le);
@@ -2148,11 +2171,11 @@ static Val gen_catch(Node *n, Scope *s, Type *ex) {
   int discard = !ex && n->b->k == N_BLOCK && n->b->list.n == 0 && !n->b->label; /* `x catch {}`: result is void */
   if (discard) R.ex = t_void;
   else if (!ex && in_typeof) { R.ex = NULL; R.collect = 1; }
-  else if (!ex) { Scope *cs0 = new_scope(s, NULL); if (n->cap) bind_val(cs0, n->cap, V(t_errset, "0")); Type *bt = typeof_impl(n->b, cs0), *p = bt && bt->k != TY_NORET ? peer_t(v.t->elem, bt) : NULL; if (p && p->k != TY_CINT && p->k != TY_VOID) R.ex = p; }
+  else if (!ex) { Scope *cs0 = new_scope(s, NULL); if (n->cap) bind_val(cs0, n->cap, V(eset_of(v.t), "0")); Type *bt = typeof_impl(n->b, cs0), *p = bt && bt->k != TY_NORET ? peer_t(v.t->elem, bt) : NULL; if (p && p->k != TY_CINT && p->k != TY_VOID) R.ex = p; }
   char *a = addr_of(v), *e = load(t_u16, a), *le = newl(), *lo = newl(), *lx = newl();
   br(e, le, lo); label(lo);
   res_put(&R, v.t->elem == t_void || discard ? VOIDV() : rv(LV(v.t->elem, addp(a, erru_off(v.t))))); jmp(lx);
-  label(le); Scope *cs = new_scope(s, NULL); if (n->cap) bind_val(cs, n->cap, V(t_errset, e));
+  label(le); Scope *cs = new_scope(s, NULL); if (n->cap) bind_val(cs, n->cap, V(eset_of(v.t), e));
   res_put(&R, gen(n->b, cs, R.collect ? NULL : R.t ? R.t : R.ex)); jmp(lx);
   label(lx); return res_get(&R);
 }
@@ -2421,7 +2444,7 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     const char *op = n->s;
     if (!strcmp(op, "and") || !strcmp(op, "or")) return gen_logic(n, s);
     if (ceval(n, s, &c)) return CK(c);
-    if (!strcmp(op, "||")) { c.k = CV_TYPE; c.t = t_errset; return CK(c); }
+    if (!strcmp(op, "||")) { die("%s:%d: runtime ||", n->tok->file, n->tok->line); }
     if (!strcmp(op, "**")) { /* runtime repetition of a tuple / array */
       CVal cn; if (!ceval(n->b, s, &cn) || cn.k != CV_INT) die("%s:%d: ** count must be comptime-known", n->tok->file, n->tok->line);
       int64_t cnt = (int64_t)cn.i;
@@ -2592,7 +2615,8 @@ void gen_fn(FnInst *fi) {
   if (is_aggr(fret)) { fsret = "%sret"; m += snprintf(params + m, sizeof params - m, "l %%sret"); }
   for (int i = 0; i < f->list.n; i++) {
     Node *p = f->list.a[i]; Type *t = fi->ptypes.a[i];
-    if (!t || (p->flags & F_VARARGS)) continue;
+    if (p->flags & F_VARARGS) { m += snprintf(params + m, sizeof params - m, "%s...", m ? ", " : ""); continue; }
+    if (!t) continue;
     char *pn = fmt("%%p%d", i);
     if (tsize(t) == 0) { if (p->s) bind_local(fs, p->s, t, "0"); continue; }
     m += snprintf(params + m, sizeof params - m, "%s%c %s", m ? ", " : "", qc(t), pn);
@@ -2609,7 +2633,7 @@ void gen_fn(FnInst *fi) {
   fclose(fb); fclose(ab);
   char rc = (fret->k == TY_VOID || fret->k == TY_NORET || is_aggr(fret) || tsize(fret) == 0) ? 0 : qc(fret);
   if (dbg_on && dbg_file) { char *rp = realpath(dbg_file, NULL); fprintf(outf, "dbgfile \"%s\"\n", rp ? rp : dbg_file); free(rp); }
-  fprintf(outf, "%sfunction %s%c $%s(%s) {\n@start\n%s%s}\n\n", (f->flags & F_EXPORT) ? "export " : "", rc ? "" : "", rc ? rc : ' ', fi->sym, params, abuf, fbuf);
+  fprintf(outf, "%sfunction %s%c $%s(%s) {\n@start\n%s%s}\n\n", ((f->flags & F_EXPORT) || fi->exported) ? "export " : "", rc ? "" : "", rc ? rc : ' ', fi->sym, params, abuf, fbuf);
   free(fbuf); free(abuf);
 }
 void gen_init_buffers(void) { fprintf(outf, "type :zbw = { l, l }\n"); db = tmpfile(); xb = tmpfile(); if (!db || !xb) die("cannot create temp files"); typeof_hook = typeof_impl; }
@@ -2637,4 +2661,34 @@ void gen_finish(void) {
   fprintf(xb, "function $zb.errexit(w %%c) {\n@start\n\t%%w =l extuw %%c\n\t%%o =l mul %%w, 16\n\t%%a =l add $zb.errnames, %%o\n\t%%p =l loadl %%a\n\t%%a2 =l add %%a, 8\n\t%%n =l loadl %%a2\n\tcall $write(w 2, l $zb.em, l 7)\n\tcall $write(w 2, l %%p, l %%n)\n\tcall $write(w 2, l $zb.nl, l 1)\n\tret\n}\n");
   { FILE *fs[2] = { xb, db }; char buf[65536]; size_t k;
     for (int i = 0; i < 2; i++) { rewind(fs[i]); while ((k = fread(buf, 1, sizeof buf, fs[i])) > 0) fwrite(buf, 1, k, outf); fclose(fs[i]); } }
+}
+
+void gen_exports(void) {
+  for (int i = 0; i < zb_exports.n; i++) { ExportReq *er = zb_exports.a[i]; Decl *d = NULL; Node *x = er->node;
+    if (x && x->k == N_UN && x->s && !strcmp(x->s, "&")) x = x->a;
+    if (x && x->k == N_IDENT) for (Scope *sc = er->scope; sc && !d; sc = sc->up) if (sc->ct) d = find_decl(sc->ct, x->s);
+    if (er->v.k == CV_FN) d = er->v.fn;
+    if (!d) die("@export: cannot resolve %s", er->name);
+    resolve_decl(d);
+    if (d->node->k == N_FN) { FnInst *fi = plain_inst(d); fi->sym = er->name; fi->exported = 1; }
+  }
+}
+
+/* inferred error sets: generate the owning function (re-entrantly) then flatten its collected entries */
+extern void eset_flatten(Type *s);
+void eset_resolve(Type *S) {
+  Container *c = S->ct; if (c->iresolved || c->iresolving) return;
+  FnInst *fi = c->infer_fi ? c->infer_fi : plain_inst(c->infer_d);
+  if (fi == gen_cur_fi) return; /* still generating: incomplete */
+  c->iresolving = 1;
+  if (!fi->done) {
+    fi->done = 1;
+    FILE *sfb = fb, *sab = ab; int sterm = term; Inl *sinl = inl; Vec sdef = defers; Loop *sloops = loops; Type *sfret = fret; char *sfsret = fsret;
+    int sit = in_typeof; Loop *sto = typeof_outer; int sdl = dbg_line; char *sdf = dbg_file; int sdisc = discarding; Node *scn = collect_node, *sgc = gen_cur; FnInst *sfi = gen_cur_fi;
+    defers = (Vec){0}; inl = NULL; in_typeof = 0; typeof_outer = NULL; discarding = 0; collect_node = NULL;
+    gen_fn(fi);
+    fb = sfb; ab = sab; term = sterm; inl = sinl; defers = sdef; loops = sloops; fret = sfret; fsret = sfsret;
+    in_typeof = sit; typeof_outer = sto; dbg_line = sdl; dbg_file = sdf; discarding = sdisc; collect_node = scn; gen_cur = sgc; gen_cur_fi = sfi;
+  }
+  eset_flatten(S); c->iresolving = 0; c->iresolved = 1;
 }

@@ -411,7 +411,7 @@ static void parse_members(Node *c) {
     if (is("}") || cur()->k == TK_EOF) return;
     int flags = 0;
     if (accept("test")) { if (cur()->k == TK_STR || cur()->k == TK_ID) P++; parse_block(); continue; }
-    if (is("comptime") && tis(ahead(1), "{")) { P++; parse_block(); continue; }
+    if (is("comptime") && tis(ahead(1), "{")) { static int cbn; Node *cb = mk(N_COMPTIME); P++; cb->a = parse_block(); cb->s = fmt("comptime#%d", ++cbn); vpush(&c->list2, cb); continue; }
     if (accept("pub")) flags |= F_PUB;
     if (accept("usingnamespace")) { parse_expr(); expect(";"); continue; }
     for (;;) {
