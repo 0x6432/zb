@@ -1656,6 +1656,7 @@ static CVal type_info17(Type *T, const char **tagp) {
     tag = "union"; Type *st = bt_type("Type.Union"); pay = mk_struct(st); layout(T->ct);
     setf(&pay, "layout", enum_lit_val(bt_type("Type.ContainerLayout"), T->ct->layout_kind == 1 ? "extern" : T->ct->layout_kind == 2 ? "packed" : "auto"));
     setf(&pay, "tag_type", T->ct->tagged ? cv_ty(T->ct->tag) : cv_null());
+    setf(&pay, "backing_integer", T->ct->layout_kind == 2 ? cv_ty(int_type(bits_of(T), 0)) : cv_null());
     int n = T->ct->fields.n; CVal *ts = xalloc(sizeof(CVal) * (n + 1)), *as = xalloc(sizeof(CVal) * (n + 1)); Type *ft = ftype(st, "field_attrs");
     for (int i = 0; i < n; i++) { ts[i] = cv_ty(((Field *)T->ct->fields.a[i])->t); as[i] = mk_struct(ft->elem); }
     setf(&pay, "field_names", names_val(st, "field_names", T->ct, 0)); setf(&pay, "field_types", slice_val(ftype(st, "field_types"), ts, n));

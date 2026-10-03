@@ -2,3 +2,4 @@
 m4-bootstrap-fixed-point zb bootstraps Zig 0.16.0: zig3 == zig4 (fixed point), stage3 zig build works
 m4-f128-asm-exact f80/f128 full precision + general inline asm: zig2 == zig3 modulo thread numbering
 m5-zig017-std Zig 0.17.0 std supported (std.lang, SoA typeInfo, backingInt, divCeil); tests pass on 0.17
+m5-zig017-bootstrap zb bootstraps Zig 0.17.0: zb-built zig2 and gcc-built zig3 self-compile byte-identically (-j1)

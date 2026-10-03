@@ -107,3 +107,8 @@ inline asm beyond syscall; assembler "value truncated" warnings.
   zb supports std.lang, SoA @typeInfo, @backingInt/@fromBackingInt/@divCeil, builtin_std17.zig. `STD=/data/zig17-src/lib/std ./run_tests.sh` passes.
   Compiling the 0.17 compiler: `cd /data/zig17-src && /data/zb/zb src/main.zig -o /data/zig17_2.ssa --std-dir lib/std -Mbuild_options=config.zig`
   Next failure: lib/std/mem.zig:2327 (byteSwapAligned) "expected comptime type expression".
+
+## Zig 0.17.0 bootstrap: DONE (fixed point)
+- `tools/build17.sh` (zb -> /data/zig17_2, ~10 min) then `tools/boot17.sh`: compiler_rt17.c, zig17_2_self.c -> stage.sh (ZLIB/RT env) -> zig17_3 -> zig17_3_self.c.
+- Result: zig17_2_self.c == zig17_3_self.c byte-identical (-j1). zig17_2 builds and runs hello world.
+- csplit.py: strip `static` after bare `zig_noreturn`-style attributes too.

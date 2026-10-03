@@ -574,7 +574,8 @@ static void res_put(Res *r, Val v) {
     if (r->ex && is_tuple_type(r->ex)) { layout(r->ex->ct); for (int i = 0; i < r->ex->ct->fields.n; i++) if (((Field *)r->ex->ct->fields.a[i])->t->k == TY_ANYTYPE) { r->t = coerce(v, r->ex).t; break; } }
     if (r->t->k == TY_CINT) r->t = t_i64;
     if (r->t->k == TY_ENUMLIT || r->t->k == TY_NULL) die("cannot infer type of branch result");
-    if (r->t->k != TY_VOID && r->t->k != TY_TYPE && tsize(r->t) > 0) r->slot = slot(r->t);
+    if (r->t->k != TY_VOID && r->t->k != TY_TYPE && tsize(r->t) > 0) { r->slot = slot(r->t); int z = tsize(r->t);
+      if (z <= 8) fprintf(ab, "\tstore%s 0, %s\n", z == 1 ? "b" : z == 2 ? "h" : z <= 4 ? "w" : "l", r->slot); } /* defined even if only void breaks reach it */
   }
   r->has = 1;
   if (r->t->k == TY_VOID) return;
@@ -1290,6 +1291,8 @@ static Val gen_minmax(Node *n, Scope *s, Type *ex, int mn) {
 static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   const char *b = n->s; Node *x = n->list.n ? n->list.a[0] : NULL, *y = n->list.n > 1 ? n->list.a[1] : NULL;
   CVal c; Type *ex0 = ex; if (ex && ex->k == TY_ERRU) ex = ex->elem;
+  if (ex && ex->k == TY_OPT) { static const char *ar[] = { "divTrunc", "divExact", "divFloor", "divCeil", "rem", "mod", "min", "max", "shlExact", "shrExact", "abs", "sqrt", NULL };
+    for (int i = 0; ar[i]; i++) if (!strcmp(b, ar[i])) { ex = ex->elem; break; } } /* numeric result: operands don't get the optional */
   if (!strcmp(b, "backingInt")) { Type *at = typeof_impl(x, s);
     if (at->k == TY_ENUM || (at->k == TY_UNION && at->ct->tagged) || at->k == TY_INT || at->k == TY_CINT) b = "intFromEnum"; else { b = "bitCast"; ex = ex0 = int_type(bits_of(at), 0); } }
   else if (!strcmp(b, "fromBackingInt")) { Type *u = ex && ex->k == TY_OPT ? ex->elem : ex; if (!u) die("%s:%d: @fromBackingInt needs a result type", n->tok->file, n->tok->line); 
@@ -1301,6 +1304,8 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   if (!strcmp(b, "divCeil")) {
     Val a = rv(gen(x, s, ex)), d = rv(gen(y, s, ex)); Type *t = peer(a, d); if (t->k == TY_CINT) t = ex ? ex : t_i64;
     a = coerce(a, t); d = coerce(d, t); if (is_wide(t)) die("%s:%d: @divCeil on wide ints unsupported", n->tok->file, n->tok->line);
+    if (is_bigf(t)) return V(t, bigf_op(12, t, bigf_op(3, t, opnd(a), opnd(d)), NULL));
+    if (is_float(t)) { char c = qc(t), *q = tmp(), *r = tmp(); emit("%s =%c div %s, %s", q, c, opnd(a), opnd(d)); emit("%s =%c call $%s(%c %s)", r, c, c == 's' ? "ceilf" : "ceil", c, q); return V(t, r); }
     char cl = qc(t), *A = opnd(a), *D = opnd(d), *q = tmp(), *r = tmp(), *nz = tmp(), *adj = tmp(), *ext = tmp(), *res = tmp();
     emit("%s =%c %s %s, %s", q, cl, t->sign ? "div" : "udiv", A, D); emit("%s =%c %s %s, %s", r, cl, t->sign ? "rem" : "urem", A, D);
     emit("%s =w cne%c %s, 0", nz, cl, r);
@@ -1665,9 +1670,11 @@ static void cap_bind(Scope *s, char *name, int ref, Val payload) {
   bind_val(s, name, rv(payload));
 }
 static Type *typeof_impl(Node *n, Scope *s);
+static int ptr_to_empty(Type *t) { return t->k == TY_PTR && ((t->elem->k == TY_ARRAY && t->elem->len == 0) || (is_tuple_type(t->elem) && (layout(t->elem->ct), t->elem->ct->fields.n == 0))); }
 static Type *peer_t(Type *a, Type *b) {
   if (!a) return b; if (!b) return a;
   if (a == b) return a;
+  if (ptr_to_empty(a) && b->k == TY_SLICE) return b; if (ptr_to_empty(b) && a->k == TY_SLICE) return a;
   if (a->k == TY_NORET) return b; if (b->k == TY_NORET) return a;
   if (a->k == TY_ENUMLIT && b->k == TY_ENUMLIT) return a;
   if (a->k == TY_ENUMLIT && (b->k == TY_ENUM || b->k == TY_UNION || (b->k == TY_OPT && (b->elem->k == TY_ENUM || b->elem->k == TY_UNION)))) return b;
@@ -1976,7 +1983,8 @@ static Val gen_switch(Node *n, Scope *s, Type *ex) {
   jmp(ld); label(ld);
   L.label = n->label; L.kind = 2; L.swslot = sw; L.swdisp = ld; L.swt = ct; L.brk = lx; L.res = &R; L.dbase = defers.n;
   int isu = ct->k == TY_UNION; Type *tagt = isu ? ct->ct->tag : ct;
-  char *x = isu ? load(tagt, addp(sw, union_tag_off(ct))) : load(ct, sw);
+  int pk = !isu && is_packed(ct); Type *pkt = pk ? int_type(bits_of(ct), 0) : NULL; /* packed struct operand: compare backing ints */
+  char *x = isu ? load(tagt, addp(sw, union_tag_off(ct))) : pk ? load(pkt, sw) : load(ct, sw);
   /* expand prongs into cases; inline prongs get one case per (comptime-known) value */
   typedef struct { Node *pr; int isct; CVal v; char *lab; } Case;
   Vec cases = {0}; int elsei = -1;
@@ -2028,7 +2036,8 @@ static Val gen_switch(Node *n, Scope *s, Type *ex) {
         emit("%s =w and %s, %s", cmp, c1, c2);
       } else {
         Val iv = coerce(gen(it, s, tagt), tagt);
-        emit("%s =w ceq%c %s, %s", cmp, qc(tagt), x, opnd(iv));
+        if (pk) { char *sl = slot(ct); put(iv, ct, sl); emit("%s =w ceq%c %s, %s", cmp, qc(pkt), x, load(pkt, sl)); }
+        else emit("%s =w ceq%c %s, %s", cmp, qc(tagt), x, opnd(iv));
       }
       br(cmp, c->lab, nx); label(nx);
     }
@@ -2094,7 +2103,7 @@ static Val gen_try(Node *n, Scope *s, Type *ex) {
   br(e, le, lo); label(le);
   if (fret->k == TY_ERRU) { store(t_u16, e, fsret); run_defers(0, e); if (!term) emit("ret"); }
   else if (fret->k == TY_ERRSET) { run_defers(0, e); if (!term) emit("ret %s", e); }
-  else die("try in function that does not return an error");
+  else emit("hlt"); /* error set must be empty (inferred) */
   term = 1; label(lo);
   if (v.t->elem == t_void) return VOIDV();
   return LV(v.t->elem, addp(a, erru_off(v.t)));
@@ -2119,6 +2128,8 @@ static Val gen_catch(Node *n, Scope *s, Type *ex) {
   label(lx); return res_get(&R);
 }
 static Val gen_orelse(Node *n, Scope *s, Type *ex) {
+  if (n->a->k == N_CALL && n->b->k == N_BUILTIN && !strcmp(n->b->s, "compileError")) { /* `f() orelse @compileError(..)`: fold comptime-known lhs */
+    CVal c; if (ceval_force(n->a, s, &c) && c.k != CV_UNDEF) { if (c.k == CV_NULL) return gen(n->b, s, ex); Val r = CK(c); return ex ? coerce(r, ex) : r; } }
   Val v = gen(n->a, s, ex ? opt_of(ex) : NULL);
   if (v.ck && v.cv.k == CV_NULL && v.cv.slen <= 0) return gen(n->b, s, ex);
   if (v.ck && v.t->k != TY_OPT) return v; /* comptime-known non-null payload */
@@ -2424,6 +2435,7 @@ static Val gen(Node *n, Scope *s, Type *ex) {
       return V(rt, sl);
     }
     int cmp = !strcmp(op, "==") || !strcmp(op, "!=") || !strcmp(op, "<") || !strcmp(op, ">") || !strcmp(op, "<=") || !strcmp(op, ">=");
+    if (ex && (ex->k == TY_OPT || ex->k == TY_ERRU) && !cmp) ex = ex->elem;
     Val a = rv(gen(n->a, s, cmp ? NULL : ex));
     Type *bh = cmp ? (a.t->k == TY_CINT || a.t->k == TY_ENUMLIT ? NULL : a.t) : (a.t->k == TY_CINT ? ex : (a.t->k == TY_MPTR ? t_usize : a.t));
     if (bh && !cmp && (n->b->k == N_SWITCH || n->b->k == N_IF) && !in_typeof) { Type *bt = typeof_impl(n->b, s); if (bt && (bt->k == TY_INT || bt->k == TY_FLOAT) && bt != bh) bh = NULL; }

@@ -43,7 +43,7 @@ def items(s):
         i += 1
     if s[start:].strip(): yield s[start:]
 
-STATIC = re.compile(r'^(\s*(?:zig_\w+\([^()]*\)\s*)*)static\s+')
+STATIC = re.compile(r'^(\s*(?:zig_\w+(?:\([^()]*\))?\s*)*)static\s+')
 header, defs, declared, defined = [], [], set(), set()
 name_re = re.compile(r'([A-Za-z_]\w*)\s*(\[[^\]]*\]\s*)*$')
 def obj_name(decl):
