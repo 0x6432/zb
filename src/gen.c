@@ -761,6 +761,7 @@ static Val gen_member(Val base, const char *name, Node *n) {
     break;
   case TY_ARRAY:
     if (!strcmp(name, "len")) { CVal c = {0}; c.k = CV_INT; c.i = t->len; c.t = t_cint; return CK(c); }
+    if (!strcmp(name, "ptr")) return V(mptr_to(t->elem, 0, 0, 0), addr_of(base)); /* (*[N]T).ptr */
     break;
   case TY_ENUM: case TY_ERRU: case TY_OPT: break;
   default: break;
@@ -1774,8 +1775,8 @@ static Val gen_while(Node *n, Scope *s, Type *ex) {
   }
   L.up = loops; loops = &L;
   if (!skip) gen(n->b, bs, NULL);
+  jmp(lk); label(lk); if (n->d && !skip) gen(n->d, bs, NULL); jmp(lc); /* continue expr may `break` out of this loop */
   loops = L.up;
-  jmp(lk); label(lk); if (n->d && !skip) gen(n->d, bs, NULL); jmp(lc);
   label(le);
   if (n->c) { Val ev = gen(n->c, es, ex); res_put(&R, ev); }
   else if ((R.has || ex) && !always) res_put(&R, VOIDV());
@@ -1929,13 +1930,21 @@ static void ct_prong_bind(Node *pr, Scope *ps, CVal *cc) {
   if (pr->cap) bind_cval(ps, pr->cap, isu ? *cc->el[0] : *cc);
   if (pr->cap2) { if (isu) { Field *f = cc->t->ct->fields.a[cc->i]; CVal tv = {0}; tv.k = CV_INT; tv.i = f->val; tv.t = cc->t->ct->tag; bind_cval(ps, pr->cap2, tv); } else bind_cval(ps, pr->cap2, *cc); }
 }
+static int has_cont_to(Node *n, const char *l, int depth) { /* does `continue :l` occur inside n? */
+  if (!n || depth > 200) return 0;
+  if (n->k == N_CONTINUE && n->label && !strcmp(n->label, l)) return 1;
+  if (has_cont_to(n->a, l, depth + 1) || has_cont_to(n->b, l, depth + 1) || has_cont_to(n->c, l, depth + 1) || has_cont_to(n->d, l, depth + 1)) return 1;
+  for (int i = 0; i < n->list.n; i++) if (has_cont_to(n->list.a[i], l, depth + 1)) return 1;
+  for (int i = 0; i < n->list2.n; i++) if (has_cont_to(n->list2.a[i], l, depth + 1)) return 1;
+  return 0;
+}
 static Val gen_switch(Node *n, Scope *s, Type *ex) {
   CVal cc; Val pre = {0}; int has_pre = 0, known = ceval(n->a, s, &cc);
   if (!known && n->a->k == N_CALL) { /* inline calls can yield comptime-known results */
     pre = rv(gen(n->a, s, NULL)); has_pre = 1;
     if (pre.ck && pre.cv.k != CV_UNDEF) { cc = pre.cv; known = 1; }
   }
-  if (known && (!n->label || type_is_ctonly(cv_typeof(&cc)))) {
+  if (known && (!n->label || type_is_ctonly(cv_typeof(&cc)) || !has_cont_to(n, n->label, 0))) {
     Type *ct = cc.t; Node *sel = NULL, *els = NULL;
     for (int i = 0; i < n->list.n && !sel; i++) {
       Node *pr = n->list.a[i]; if (pr->flags & F_ELSE) { els = pr; continue; }

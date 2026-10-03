@@ -98,3 +98,12 @@ Chain: zb (C) compiles Zig 0.16 compiler -> QBE -> `zig2` (tools/build2.sh).
   (zb keeps f128 at f64 precision at runtime) plus resulting InternPool numbering.
 Remaining polish: real f128/f80 runtime precision in zb (so zig2 output matches directly); a17 u8+u16 peer bug;
 inline asm beyond syscall; assembler "value truncated" warnings.
+
+## Session update (f128, asm, 0.17)
+- Done: a17 peer fix; general inline asm (stubs in `<out>.asm.s`, must be linked); f80/f128 full precision (16-byte memory values + zbrt.c shims; link tools/zbrt.c); packed union bit sizes; f80 signbit (wide-int bitcast sign-extend).
+- zig2_self.c == zig3_self.c modulo numbering; numbering differences are InternPool thread nondeterminism -> self-compiles now use `-j1`.
+- stage3 (`zig4 build -p /data/stage3 -Dno-lib`) works: fmt/ast-check/run hello OK.
+- Zig 0.17.0: release notes at /data/zig-0.17.0-release-notes.md, source /data/zig17-src (config.zig = tools/config17.zig, no aro module).
+  zb supports std.lang, SoA @typeInfo, @backingInt/@fromBackingInt/@divCeil, builtin_std17.zig. `STD=/data/zig17-src/lib/std ./run_tests.sh` passes.
+  Compiling the 0.17 compiler: `cd /data/zig17-src && /data/zb/zb src/main.zig -o /data/zig17_2.ssa --std-dir lib/std -Mbuild_options=config.zig`
+  Next failure: lib/std/mem.zig:2327 (byteSwapAligned) "expected comptime type expression".

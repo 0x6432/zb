@@ -206,8 +206,9 @@ static Node *parse_primary_type(void) {
   if (is("anytype")) { P++; n = mk(N_IDENT); n->s = "anytype"; return n; }
   perr("expected expression");
 }
-static Node *parse_suffix(void) {
-  Node *n = parse_primary_type();
+static Node *suffix_ops(Node *n);
+static Node *parse_suffix(void) { return suffix_ops(parse_primary_type()); }
+static Node *suffix_ops(Node *n) {
   for (;;) {
     if (accept("[")) {
       Node *i = parse_expr_nc();
@@ -290,8 +291,8 @@ static Node *parse_primary(void) {
   if (accept("nosuspend")) return parse_expr();
   if (is_labeled()) {
     char *l = ident(); expect(":");
-    if (is("{")) { n = parse_block(); n->label = l; return n; }
-    if (is("switch")) { n = parse_switch(); n->label = l; return n; }
+    if (is("{")) { n = parse_block(); n->label = l; return suffix_ops(n); }
+    if (is("switch")) { n = parse_switch(); n->label = l; return suffix_ops(n); }
     if (is("inline")) { if (tis(ahead(1), "for")) return parse_for(l); return parse_while(l); }
     if (is("while")) return parse_while(l);
     return parse_for(l);
