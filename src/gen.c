@@ -421,8 +421,36 @@ static Val float_conv(Val v, Type *to) { /* float -> float, int -> float, float 
   }
   die("bad float conversion %s -> %s", tname(f), tname(to));
 }
+
+/* 0.17 @bitCast: logical bit representation for arrays/vectors with padded elements */
+static int lbits(Type *t) { if (t->k == TY_ARRAY) return (int)(lbits(t->elem) * t->len); return bits_of(t); }
+static int lpadded(Type *t) { if (t->k != TY_ARRAY) return 0; return lpadded(t->elem) || bits_of(t->elem) != 8 * tsize(t->elem) || t->elem->k == TY_ARRAY; }
+static void lwalk(Type *t, char *addr, char *buf, int64_t *off, int put) {
+  if (t->k == TY_ARRAY) { for (int64_t i = 0; i < t->len; i++) lwalk(t->elem, addp(addr, i * tsize(t->elem)), buf, off, put); return; }
+  int nb = bits_of(t), sz = tsize(t), sg = t->k == TY_INT && t->sign;
+  for (int c = 0; c * 64 < nb; c++) {
+    int n = nb - c * 64 > 64 ? 64 : nb - c * 64, bytes = sz - c * 8 >= 8 ? 8 : sz - c * 8; char *a = addp(addr, c * 8);
+    if (put) { char *r = tmp(), *v = tmp();
+      emit("%s =l %s %s", r, bytes == 8 ? "loadl" : bytes >= 4 ? "loaduw" : bytes == 2 ? "loaduh" : "loadub", a);
+      if (bytes == 4 || bytes == 2 || bytes == 1) emit("%s =l copy %s", v, r); else v = r;
+      emit("call $zb_bitput(l %s, l %lld, l %s, w %d)", buf, (long long)*off, v, n);
+    } else { char *r = tmp(); emit("%s =l call $zb_bitget(l %s, l %lld, w %d)", r, buf, (long long)*off, n);
+      if (sg && n < 64 && c * 64 + n == nb) { char *q = tmp(), *w = tmp(); emit("%s =l shl %s, %d", q, r, 64 - n); emit("%s =l sar %s, %d", w, q, 64 - n); r = w; }
+      if (bytes == 8) emit("storel %s, %s", r, a); else if (bytes >= 4) emit("storew %s, %s", r, a); else if (bytes == 2) emit("storeh %s, %s", r, a); else emit("storeb %s, %s", r, a); }
+    *off += n;
+  }
+}
+static Val lbitcast(Val v, Type *ex) {
+  char *src; if (is_aggr(v.t)) src = addr_of(v); else { src = slot(v.t); store(v.t, opnd(v), src); }
+  int64_t nb = lbits(ex), bb = (nb + 7) / 8 + 8; char *buf = tmp(); emit("%s =l alloc8 %lld", buf, (long long)((bb + 7) & ~7));
+  int64_t off = 0; lwalk(v.t, src, buf, &off, 1);
+  char *sl = slot(ex); emit("call $memset(l %s, w 0, l %d)", sl, tsize(ex)); off = 0; lwalk(ex, sl, buf, &off, 0);
+  return is_aggr(ex) ? V(ex, sl) : V(ex, load(ex, sl));
+}
 static Val coerce(Val v, Type *to) {
   if (!to || v.t == to) return v;
+  if (v.ck && v.cv.k == CV_SLICE && v.t && v.t->k == TY_SLICE && to->k == TY_PTR && to->elem->k == TY_ARRAY && to->elem->len == v.cv.slen && to->elem->elem == v.t->elem) {
+    int64_t off; char *sym = ptr_parts(&v.cv, &off); if (sym) return V(to, addp(sym, off)); } /* 0.17: comptime-length slice -> *[N]T */
   if (v.ck && v.cv.k == CV_AGG && is_tuple_type(v.t) && (to->k == TY_STRUCT || to->k == TY_TUPLE || to->k == TY_ARRAY) && !is_packed(to)) {
     int any = 0; if (is_tuple_type(to)) { layout(to->ct); for (int i = 0; i < to->ct->fields.n; i++) if (((Field *)to->ct->fields.a[i])->t->k == TY_ANYTYPE) any = 1; }
     if (!any) { CVal c = ccoerce(v.cv, to); if (c.k == CV_AGG && c.t == to) { Val r = CK(c); r.t = to; return r; } }
@@ -1379,6 +1407,7 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   if (!strcmp(b, "bitCast")) {
     Val v = rv(gen(x, s, NULL)); if (!ex) die("@bitCast needs a result type");
     if (v.ck) { CVal r; if (ceval_rt(n, s, ex, &r)) { Val c = CK(r); c.t = ex; return c; } if (is_aggr(ex) || is_aggr(v.t)) v = V(v.t, mat(v)), v.ck = 0, v = is_aggr(v.t) ? V(v.t, addr_of(coerce(CK(v.cv), v.t))) : v; else return coerce(v, ex); }
+    if ((lpadded(v.t) || lpadded(ex)) && (v.t->k == TY_ARRAY || ex->k == TY_ARRAY)) return lbitcast(v, ex);
     if (is_aggr(v.t) || is_aggr(ex)) { if (is_aggr(v.t)) { if (is_aggr(ex)) { if (is_wide(ex) && ex->bits < 128 && ex->bits > 64) { char *sl = slot(ex); blit(addr_of(v), sl, 16); wnorm(ex, sl); return V(ex, sl); } return V(ex, addr_of(v)); } return V(ex, load(ex, addr_of(v))); } char *sl = slot(ex); store(v.t, opnd(v), sl); return V(ex, sl); }
     if (v.t->k == TY_FLOAT && v.t->bits == 16 && ex->k != TY_FLOAT) { char *r = tmp(); emit("%s =w call $zb_f2h(s %s)", r, opnd(v)); return V(ex, norm(r, ex)); }
     if (ex->k == TY_FLOAT && ex->bits == 16 && v.t->k != TY_FLOAT) { char *r = tmp(); emit("%s =s call $zb_h2f(w %s)", r, opnd(v)); return V(ex, r); }
@@ -2337,7 +2366,9 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     if (!r.ck && r.t && (r.t->k == TY_NULL || r.t->k == TY_VOID)) return CK(r.t->k == TY_NULL ? cv_null_pub() : (CVal){ .k = CV_VOID, .t = t_void });
     return r;
   }
-  case N_DEREF: { Val v = rv(gen(n->a, s, NULL)); Val r = LV(v.t->elem, opnd(v)); if (v.t->k == TY_PTR && v.t->len > 0) { r.bf = 1; r.hbytes = (int)v.t->len; r.bitoff = (int)v.t->sent; } return r; }
+  case N_DEREF: { Val v = rv(gen(n->a, s, NULL));
+    if (v.t->k == TY_SLICE) { CVal sc; if (!ceval(n->a, s, &sc) || sc.k != CV_SLICE) die("%s:%d: slice deref needs a comptime-known length", n->tok->file, n->tok->line);
+      return LV(array_of(v.t->elem, sc.slen, 0, 0), load(t_u64, addr_of(v))); } Val r = LV(v.t->elem, opnd(v)); if (v.t->k == TY_PTR && v.t->len > 0) { r.bf = 1; r.hbytes = (int)v.t->len; r.bitoff = (int)v.t->sent; } return r; }
   case N_UNWRAP: { Val v = gen(n->a, s, NULL);
     if (v.ck && v.cv.k == CV_NULL) { if (!term) emit("hlt"); term = 1; return NORET(); }
     if (v.ck && v.t->k != TY_OPT) return v;

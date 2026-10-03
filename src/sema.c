@@ -265,7 +265,8 @@ static void layout_inner(Container *c) {
     if (n && (n->flags & F_TAGGED)) c->tagged = 1;
     if (c->tagged) {
       if (n && n->a && !(n->flags & F_ALLOWZERO)) c->tag = eval_type(n->a, c->scope);
-      else if (!c->tag) { c->tag = synth_tag(c); if (n && n->a) { Type *it = eval_type(n->a, c->scope); c->tag->ct->tag = it; for (int i = 0; i < c->tag->ct->fields.n; i++) ((Field *)c->tag->ct->fields.a[i])->t = it; c->tag->size = tsize(it); c->tag->align = talign(it); } }
+      else if (!c->tag) { c->tag = synth_tag(c); if (n && n->a) { Type *it = eval_type(n->a, c->scope); c->tag->ct->tag = it; for (int i = 0; i < c->tag->ct->fields.n; i++) ((Field *)c->tag->ct->fields.a[i])->t = it; c->tag->size = tsize(it); c->tag->align = talign(it);
+          int64_t next = 0; for (int i = 0; i < c->fields.n; i++) { Field *f = c->fields.a[i]; Field *ef = c->tag->ct->fields.a[i]; if (f->def) { CVal v; if (!ceval_rt(f->def, c->scope, it, &v)) die("union tag value not comptime"); next = (int64_t)v.i; f->def = NULL; } ef->val = next++; } } }
       if (!c->tag->ct) die("%s:%d: union tag of %s is not an enum (%s)", n->tok->file, n->tok->line, c->name, tname(c->tag));
       for (int i = 0; i < c->fields.n; i++) { Field *f = c->fields.a[i]; Field *ef = find_field(c->tag->ct, f->name); if (ef) f->val = ef->val; }
       int ta = talign(c->tag); if (ta > al) al = ta;

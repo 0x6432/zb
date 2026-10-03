@@ -206,3 +206,5 @@ void gen_all(void);
 void out(const char *f, ...);
 extern FILE *outf;
 CVal *cell_parent(CVal *c, int *fi);
+
+extern int zig17;

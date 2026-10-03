@@ -82,3 +82,11 @@ long zb_toi(int bits, const void *p, int sg) { if (bits == 80) return sg ? (long
 void zb_toi128(int bits, void *r, const void *p, int sg) { __int128 v;
   if (bits == 80) v = sg ? (__int128)ldx(p) : (__int128)(unsigned __int128)ldx(p); else v = sg ? (__int128)ldq(p) : (__int128)(unsigned __int128)ldq(p);
   __builtin_memcpy(r, &v, 16); }
+
+/* 0.17 @bitCast logical bit stream helpers */
+void zb_bitput(unsigned char *b, unsigned long off, unsigned long v, unsigned n) {
+  for (unsigned i = 0; i < n; i++, off++) { if ((v >> i) & 1) b[off >> 3] |= (unsigned char)(1u << (off & 7)); else b[off >> 3] &= (unsigned char)~(1u << (off & 7)); }
+}
+unsigned long zb_bitget(const unsigned char *b, unsigned long off, unsigned n) {
+  unsigned long v = 0; for (unsigned i = 0; i < n; i++, off++) v |= (unsigned long)((b[off >> 3] >> (off & 7)) & 1) << i; return v;
+}

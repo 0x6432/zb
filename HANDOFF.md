@@ -112,3 +112,7 @@ inline asm beyond syscall; assembler "value truncated" warnings.
 - `tools/build17.sh` (zb -> /data/zig17_2, ~10 min) then `tools/boot17.sh`: compiler_rt17.c, zig17_2_self.c -> stage.sh (ZLIB/RT env) -> zig17_3 -> zig17_3_self.c.
 - Result: zig17_2_self.c == zig17_3_self.c byte-identical (-j1). zig17_2 builds and runs hello world.
 - csplit.py: strip `static` after bare `zig_noreturn`-style attributes too.
+
+## 0.17 language audit (release notes) — done
+- Covered by tests/std17 (run automatically when /data/zig17-src/lib/std exists, override STD17=): @hasDecl pub-only (global `zig17` flag set when std has lang.zig), slice.* / slice -> *[N]T for comptime-length slices, union(enum(T)) explicit tag values, @backingInt/@fromBackingInt/@divCeil, 0.17 @bitCast logical bit representation (runtime lbitcast in gen.c + zbrt.c zb_bitput/zb_bitget; comptime cflat/cunflat in ct.c), enum(noreturn) {}.
+- Removed syntax (`**`, void{}, errdefer capture, i0, internal/link_once) needs no work for valid input.

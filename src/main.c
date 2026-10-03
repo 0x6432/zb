@@ -1,4 +1,5 @@
 #include "zb.h"
+int zig17;
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -38,7 +39,7 @@ int main(int argc, char **argv) {
   if (stddir && *stddir) {
     char *rd = realpath(stddir, NULL); if (!rd) die("--std-dir: cannot open %s", stddir);
     std_file = fmt("%s/std.zig", rd); std_builtin_file = fmt("%s/builtin.zig", rd); if (access(std_builtin_file, R_OK)) std_builtin_file = fmt("%s/lang.zig", rd); /* 0.17: std.builtin -> std.lang */
-    builtin_file = fmt(strstr(std_builtin_file, "/lang.zig") ? "%s/builtin_std17.zig" : "%s/builtin_std.zig", lib_dir); using_real_std = 1;
+    zig17 = strstr(std_builtin_file, "/lang.zig") != NULL; builtin_file = fmt(zig17 ? "%s/builtin_std17.zig" : "%s/builtin_std.zig", lib_dir); using_real_std = 1;
   }
   if (!std_file) { std_file = fmt("%s/std.zig", lib_dir); std_builtin_file = fmt("%s/std/builtin.zig", lib_dir); builtin_file = fmt("%s/builtin.zig", lib_dir); }
   if (getenv("ZB_PARSE_ONLY")) { parse_file(in); return 0; }

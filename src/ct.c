@@ -1174,6 +1174,11 @@ static int ev_(Node *n, Scope *s, CVal *out) {
   case N_SLICE: return ev_slice(n, s, out);
   case N_DEREF: {
     EV(n->a, s, &a);
+    if (a.k == CV_SLICE && a.t && a.t->k == TY_SLICE) { /* 0.17: comptime-length slice deref -> array */
+      Type *at = array_of(a.t->elem, a.slen, 0, 0); CVal r = agg_new(at);
+      for (int64_t i = 0; i < a.slen; i++) *r.el[i] = ccoerce(cv_elem(&a, i), a.t->elem);
+      *out = r; return R_OK;
+    }
     if (a.k == CV_STR || (a.k == CV_PTR && a.base && a.idx >= 0 && a.t && a.t->k == TY_PTR && a.t->elem->k == TY_ARRAY && !is_vec(a.t->elem) &&
         !(a.base->k == CV_AGG && cv_typeof(a.base)->k == TY_ARRAY && cv_typeof(a.base)->elem == a.t->elem))) {
       /* dereferencing a pointer to a (sub-)array: copy the elements out */
@@ -1845,6 +1850,17 @@ static Container *mk_container(int k, const char *name) {
   Container *c = xalloc(sizeof *c); c->name = (char *)name;
   Type *t = xalloc(sizeof *t); t->k = k; t->ct = c; t->size = -1; c->type = t; return c;
 }
+
+static int cleaf_ok(Type *t) { while (t->k == TY_ARRAY) t = t->elem; return packed_type(t); }
+static int clbits(Type *t) { return t->k == TY_ARRAY ? (int)(clbits(t->elem) * t->len) : bits_of(t); }
+static void cflat(CVal *a, Type *t, i128 *acc, int *off) {
+  if (t->k == TY_ARRAY) { for (int i = 0; i < t->len; i++) cflat(a->el[i], t->elem, acc, off); return; }
+  int nb = bits_of(t); i128 v = pack_val(a) & umask(nb); *acc |= v << *off; *off += nb;
+}
+static CVal cunflat(Type *t, i128 acc, int *off) {
+  if (t->k == TY_ARRAY) { CVal r = agg_new(t); for (int i = 0; i < r.n; i++) *r.el[i] = cunflat(t->elem, acc, off); return r; }
+  int nb = bits_of(t); CVal r = unpack_val((acc >> *off) & umask(nb), t); *off += nb; return r;
+}
 static int ev_builtin(Node *n, Scope *s, CVal *out) {
   const char *b0 = n->s; Type *rt = brt; brt = NULL;
   int na = n->list.n; Node *x = na > 0 ? n->list.a[0] : NULL, *y = na > 1 ? n->list.a[1] : NULL, *z = na > 2 ? n->list.a[2] : NULL;
@@ -1904,7 +1920,7 @@ static int ev_builtin(Node *n, Scope *s, CVal *out) {
     *out = cv_int(B("offsetOf") ? (is_packed(T) ? f->bitoff / 8 : f->off) : (is_packed(T) ? f->bitoff : f->off * 8), t_cint); return R_OK;
   }
   if (B("FieldType")) { TY(x, T); EV(y, s, &b); Field *f = find_field(T->ct, cv_cstr(&b, NULL)); if (!f) die("@FieldType: no field"); *out = cv_ty(f->t); return R_OK; }
-  if (B("hasDecl")) { TY(x, T); EV(y, s, &b); char *nm = cv_cstr(&b, NULL); *out = cv_bool(T->ct && find_decl(T->ct, nm) != NULL); return R_OK; }
+  if (B("hasDecl")) { TY(x, T); EV(y, s, &b); char *nm = cv_cstr(&b, NULL); Decl *hd = T->ct ? find_decl(T->ct, nm) : NULL; *out = cv_bool(hd && (!zig17 || (hd->node->flags & F_PUB))); return R_OK; }
   if (B("hasField")) {
     TY(x, T); EV(y, s, &b); char *nm = cv_cstr(&b, NULL);
     if (T->k == TY_PTR) T = T->elem;
@@ -1939,6 +1955,8 @@ static int ev_builtin(Node *n, Scope *s, CVal *out) {
       i128 v = pack_val(&a); if (ft->k == TY_INT || ft->k == TY_ENUM || ft->k == TY_FLOAT || is_packed(ft)) v &= umask(bits_of(ft));
       *out = unpack_val(v, urt); return R_OK;
     }
+    if ((urt->k == TY_ARRAY || ft->k == TY_ARRAY) && a.k != CV_UNDEF && (a.k == CV_AGG || ft->k != TY_ARRAY) && cleaf_ok(urt) && cleaf_ok(ft) && clbits(urt) <= 128 && clbits(ft) == clbits(urt)) {
+      i128 acc = 0; int off = 0; cflat(&a, ft, &acc, &off); off = 0; *out = cunflat(urt, acc, &off); return R_OK; }
     if (urt->k == TY_ARRAY && ft->k == TY_ARRAY && urt->len == ft->len) { *out = ccoerce(a, urt); return R_OK; }
     if (urt->k == TY_ARRAY && (ft->k == TY_INT) && urt->elem->k == TY_INT) {
       CVal r = agg_new(urt); int eb = urt->elem->bits;
