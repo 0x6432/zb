@@ -1,0 +1,74 @@
+name: bootstrap
+# Builds zb, runs its tests, compiles the Zig 0.16.0 compiler with zb (-> QBE -> zig2),
+# then bootstraps zig2 -> zig3 -> zig4 through Zig's C backend, checks the fixed point
+# (zig3 output == zig4 output), and builds stage3 with Zig's own build system and tools.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  ZIG_VERSION: 0.16.0
+  QBE_VERSION: "1.2"
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Free disk / add swap
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo fallocate -l 8G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2 || true
+          free -g; df -h .
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libgc-dev python3 xz-utils
+      - name: Cache Zig source and QBE
+        uses: actions/cache@v4
+        with:
+          path: work/dl
+          key: deps-zig-${{ env.ZIG_VERSION }}-qbe-${{ env.QBE_VERSION }}
+      - name: Fetch Zig source and QBE
+        run: |
+          mkdir -p work/dl && cd work
+          [ -f dl/zig.tar.xz ] || curl -fL -o dl/zig.tar.xz https://ziglang.org/download/$ZIG_VERSION/zig-$ZIG_VERSION.tar.xz
+          [ -f dl/qbe.tar.xz ] || curl -fL -o dl/qbe.tar.xz https://c9x.me/compile/release/qbe-$QBE_VERSION.tar.xz
+          tar xf dl/zig.tar.xz && tar xf dl/qbe.tar.xz
+          make -C qbe-$QBE_VERSION -j$(nproc)
+          mkdir -p ../zig-0.16.0 && cp -r zig-$ZIG_VERSION/lib ../zig-0.16.0/   # std used by zb's own tests
+      - name: Build zb and run zb tests
+        run: ci/bootstrap.sh zb
+        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+      - name: zb compiles the Zig compiler -> zig2
+        run: ci/bootstrap.sh zig2
+        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+      - name: Bootstrap stages zig2 -> zig3 -> zig4
+        run: ci/bootstrap.sh stages
+        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe, JOBS: 2 }
+      - name: Binary comparison (fixed point)
+        run: ci/bootstrap.sh compare
+        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+      - name: Zig's own build system and tools (stage3)
+        run: ci/bootstrap.sh stage3
+        continue-on-error: true
+        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-artifacts
+          path: |
+            work/SHA256SUMS
+            work/zig2
+            work/zig3
+            work/zig4
+            work/compiler_rt.c
+          if-no-files-found: ignore
+      - name: Tag progress
+        if: success()
+        run: |
+          tag=$(cat PROGRESS_TAG)
+          git tag -l "$tag" | grep -q . || { git tag "$tag" && git push origin "$tag"; }
