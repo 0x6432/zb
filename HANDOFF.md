@@ -1,129 +1,47 @@
-# CURRENT TARGET: Zig 0.17.0 only (0.16 dropped)
-- Sources: Zig 0.17 at /data/zig17-src (config.zig = tools/config17.zig, no aro module); `zb/zig-0.17.0` -> symlink to it (gitignored).
-- Build/verify: `tools/build17.sh` (zb -> /data/zig17_2), `tools/boot17.sh` (compiler_rt17 + self -> zig17_3 -> cmp). Tests: `./run_tests.sh` (default STD=zig-0.17.0/lib/std; 37/37).
-- 0.16-only scripts (build2/self/zc/qb/rz/cc3, tools/config.zig) removed; CI (`ci/bootstrap.sh`, workflow) now fetches and bootstraps 0.17.0.
-- Sections below are history; paths mentioning 0.16 / /data/zig-src are obsolete.
+# zb handoff (target: Zig 0.17.0 only)
 
-# zb — handoff notes (for the next agent)
+## What it is
+`zb` (C, ~src/*.c) compiles Zig 0.17.0 → QBE IL → x86_64 asm; link with `<out>.asm.s` (inline-asm stubs) and
+`tools/zbrt.c`. Input assumed valid. Repo: GitHub `0x6432/zb` (branch `main`); backups are numbered `backup-NN`
+lines in `MILESTONES` (the milestone-tag workflow creates the tags).
 
-## Goal
-User (Teyesh) wants a **simple bootstrap compiler written in C** that compiles **Zig 0.16** source to **QBE IL**
-(then `qbe` → asm → `cc`). x86_64 Linux only, assume valid input code, core language only.
-Milestones done: M1 (core codegen), M2 (comptime interpreter + `--std-dir <zig>/lib/std` so `@import("std")`
-uses the real Zig std), M3 (enough of std to run real programs incl. std.debug.print, std.Io.Threaded file IO).
-**Current task (M4): user asked "can it compile the Zig compiler?"** — answer so far: *not yet*, iterating on
-compile errors while compiling the real Zig 0.16 compiler source. Report honest status to the user when done/blocked.
+## Status
+- Zig 0.17.0 bootstrap fixed point: zb-built `zig17_2` and gcc-built `zig17_3` self-compile byte-identically (`-j1`).
+- Full core language incl. 0.17 changes (std.lang, SoA @typeInfo, @backingInt/@fromBackingInt/@divCeil, logical
+  @bitCast, pub-only @hasDecl, comptime-length slice deref), @export/@extern, @cVa*, precise error sets
+  (named, `||`, inferred via lazy fn analysis), f80/f128, general inline asm.
+- Tests: `./run_tests.sh` → 37/37 (tests/, tests/std/, tests/std17/ against `zig-0.17.0/lib/std`).
 
-## Layout
-- `src/*.c, src/zb.h` — lexer, parser, sema (`sema.c`: decls/imports/modules/layout), `ct.c` (comptime interpreter,
-  CVal), `gen.c` (QBE codegen, typeof dry runs, inline expansion, peer types).
-- `tests/` + `./run_tests.sh` → must stay **28 passed** (expected files end with `exit=0` line).
-- Build: `rm -f zb && make`. Debug build: `cc -O0 -g -rdynamic -w -o zbg src/*.c -lm` (+ `addr2line -e zbg` on frames).
-- Needs (not in zip, re-download if missing): `qbe-1.2/` (build with make) and `zig-0.16.0/lib` (Zig std) inside /data/zb;
-  Zig compiler source at `/data/zig-src` (https://ziglang.org/download/0.16.0/zig-0.16.0.tar.xz) plus
-  `/data/zig-src/config.zig` = the build_options module: copy the `build_options` Zig text that `bootstrap.c` writes
-  (have_llvm=false, dev=.core, etc.) into that file.
-
-## Helper scripts (copies are in tools/zc.sh and tools/run.sh)
-/tmp/zc.sh:
-```sh
-#!/bin/sh
-cd /data/zb && rm -f zb && make 2>&1 | grep -iE '\berror\b'
-cd /data/zig-src && ZB_FLOAT_HACK=1 timeout 300 /data/zb/zb src/main.zig -o /tmp/zig2.ssa --std-dir lib/std \
-  -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig 2>&1 | head -${1:-8} | cut -c1-300
+## Setup (sandbox resets /tmp and packages; /data may be rolled back — resync from GitHub if git log looks old)
 ```
-/tmp/t/run.sh (`./run.sh file.zig --std-dir /data/zb/zig-0.16.0/lib/std`):
-```sh
-#!/bin/sh
-f=$1; shift
-/data/zb/zb "$f" -o /tmp/t/out.ssa "$@" && /data/zb/qbe-1.2/qbe -o /tmp/t/out.s /tmp/t/out.ssa && cc -o /tmp/t/out /tmp/t/out.s -lm && /tmp/t/out
+sudo dnf install -y -q gdb gc-devel
+cd /data/zb && ln -sfn /data/zig17-src zig-0.17.0 && make GC=1 -s && ./run_tests.sh
 ```
-Workflow: run zc.sh → read error (it prints an instantiation chain) → write a tiny repro in /tmp/t → fix → run tests → commit.
+- Zig 0.17 source: /data/zig17-src (`config.zig` = tools/config17.zig; no aro module). QBE: zb/qbe-1.2.
+- Resync: `git clone https://github.com/0x6432/zb /tmp/zbgh` (works without auth) and copy files over.
+- Push: write `{owner,repo,branch,message,files:[{path,content}]}` JSON (≤~400KB) and call GitHub MCP
+  `push_files` with `arguments_file_path`; deletions need `delete_file`.
 
-## Debug env vars
-`ZB_TRAPLOC`, `ZB_CT_TRACE=1`, `ZB_BT=1`, `ZB_INST_STAT=1` (decls with ≥64 instances), `ZB_NOINLINE=1`, `ZB_INLDBG=1`,
-`ZB_DBG=1`, `ZB_FLOAT_HACK=1` (TEMPORARY/WRONG: maps f16/f80/f128 to s/d QBE classes just to explore later errors).
-No gdb in sandbox. Don't `pkill -f` patterns that match your own shell.
+## Scripts
+- `tools/run.sh f.zig --std-dir /data/zb/zig-0.17.0/lib/std` — compile + run one file.
+- `tools/build17.sh` — zb → /data/zig17_2 (~10 min; `ZB_DBG=1` for line info).
+- `tools/boot17.sh` — compiler_rt17.c, zig17_2 self → stage.sh → zig17_3 → self → cmp.
+- `tools/stage.sh IN.c OUT` — split (csplit.py) + cc + link Zig C output.
+- Reference outputs from real 0.17: `cd /data/zig17-src && /data/zig17_3 build-exe -ofmt=c -lc -OReleaseSmall
+  -femit-bin=/tmp/x.c -target x86_64-linux --zig-lib-dir lib f.zig && cc -w -I lib -o /tmp/x /tmp/x.c -lm`.
+- CI: `ci/bootstrap.sh` stages zb / zig2 / stages / compare / stage3 (workflow `.github/workflows/bootstrap.yml`).
 
-## Recent fixes (this session, latest first; see git log for detail)
-- Optional Boehm GC (make GC=1); comptime self params; type-constructor builtins force comptime; &comptime-tuple -> array;
-  comptime-known for-range lengths; quoted @"null" idents; 128-bit int<->float; runtime `**`; tuple .len.
-- Branch results under partial tuple hints (`const a, const b: T = switch ...`) are peer-resolved (ex_partial()).
-- Runtime tuple `.len`; `@unionInit` with computed names; runtime `**` for tuples/arrays.
-- 128-bit int <-> float via libgcc (__floattidf, __fixdfti, ...).
-- Comptime slice `.len`/`.ptr` assignment; `&.{}` (ptr to tuple) -> slice/many-ptr; `.*` of `++` result.
-- ZON `@import("x.zon")` with result types; `.{}` -> slice at comptime.
-- inline else over bool/small ints, inline prong ranges; lenient runtime fallback for failing `comptime` calls.
-- Peer types for for/while loop expressions; quoted `@"_"` enum fields; @typeInfo of generic fns.
-- Wide (u128-window) packed fields; wide comptime_int (>i128, `big`/`ih` in CVal; ev_bin_wide).
-- Bit-pointers to packed fields; explicit field align(N); comptime fields in anon structs (Field.is_ct/defcv).
-- @memset/@memcpy into comptime vars (ct_try_store); lenient `try` on non-error values; runtime tuple `++`.
+## Debug aids
+`ZB_TRAPLOC=1`, `ZB_CT_TRACE=1`, `ZB_BT=1`, `ZB_DBG=1`, `ZB_TRACE_FN=1`; gdb on zb for crashes.
 
-## CURRENT ERROR (next thing to fix)
-```
-zb: src/codegen/aarch64/Assemble.zig:163: cannot coerce anon2909 to anon2915
-```
-Cause: inline param types like `form: union(enum) {...}` get a new container type each time the param type is evaluated
-(container_from memo keyed by Scope pointer). Repro /tmp/t/a17.zig (in tools/repros if copied). An experimental fix
-`scope_equiv()` in sema.c (enable with env ZB_CT_MEMO=1) fixes the repro but over-merges elsewhere
-(-> "cannot coerce SortOrder to SortOrder" in multi_array_list.zig:605). Needs a precise key: only the comptime
-values the container body actually references (or memo per FnInst/fn-type evaluation).
-Also noticed: `d + switch(...)` with u8 + u16 peer computes in u8 (a17 prints 46, should be 302).
+## Code map
+- lex.c/parse.c (top-level `comptime {}` kept as N_COMPTIME decls), sema.c (types, layout, error-set types,
+  fn_instance), ct.c (comptime interpreter, builtins, @typeInfo), gen.c (QBE codegen, coerce, inline asm,
+  exports, eset_resolve), main.c (driver; `zig17` flag set when std has lang.zig).
+- Error sets: TY_ERRSET with ct->fields = names (anyerror = t_errset, ct NULL); TY_ERRU set in t->ret
+  (erru_of2). Inferred sets collect entries in coerce/gen_try and resolve by generating the fn re-entrantly.
 
-Build: `make GC=1` (Boehm GC, needs gc-devel) — without GC the full compile OOMs at 4 GB; with GC peak ~2.8 GB.
-Setup: Zig source at /data/zig-src (+ config.zig build_options), lib copy at zb/zig-0.16.0/lib, qbe at zb/qbe-1.2.
-Tests: ./run_tests.sh must stay "passed 28, failed 0".
-
-## Known big remaining items
-1. Runtime f16/f80/f128 (only f32/f64 real today). Plan: f16 via f32 conversions; f80/f128 as 16-byte memory values
-   with soft-float helpers (port compiler_rt add/sub/mul/div/cmp/extend/trunc/int-conv, in C runtime or Zig).
-2. Inferred error sets not tracked; destructuring loses comptime tuple fields (comptime_int handled leniently).
-3. Inline asm: only `syscall` supported; `cpuid`/`xgetbv` compile as traps → needs a linked helper .s/.c runtime.
-4. After it compiles: actually build & run the produced zig2 binary (runtime correctness, perf), compiler_rt.
-
-## Backups
-Zip (excluding big deps): `cd /data && zip -qr zb_backup.zip zb -x 'zb/zig-0.16.0/*' 'zb/qbe-1.2/*' 'zb/zig.tar.xz' 'zb/build/*' 'zb/zb' 'zb/zbg'`
-User wants periodic backups + git commits.
-
-## Status update (M4, latest)
-- zb compiles the whole Zig 0.16 compiler -> QBE -> working `zig2` binary (`tools/build2.sh`, needs `make GC=1`, links `tools/zbrt.c`).
-- **zb-built zig2 works end to end for hello world**: `zig2 build-exe -ofmt=c -lc ... h2.zig` -> C -> cc -> runs correctly.
-- Current blocker: `zig2 build-obj ... -Mroot=lib/compiler_rt.zig` (bootstrap step). Last trap was in big.int setFloat (wide @clz bug), now fixed in zb but zig2 is **not yet rebuilt/retested** with that fix.
-- Next: rebuild zig2 (`ZB_DBG=1 ZB_TRAPLOC=1 tools/build2.sh`), rerun compiler_rt (`tools/rz2.sh build-obj -ofmt=c -OReleaseSmall --name compiler_rt -femit-bin=/tmp/zt/compiler_rt.c -target x86_64-linux --zig-lib-dir lib -Mroot=lib/compiler_rt.zig`), then zig2.c self-build.
-- Debug aids: `ZB_DBG=1` emits line info (gdb shows Zig file:line); `tools/rz2.sh` runs zig2 under gdb with backtrace at traps. Needs `sudo dnf install gdb gc-devel` after sandbox reset. Helper scripts live in tools/ (copy to /tmp).
-- f16/f80/f128 at runtime: kept in f32/f64 registers, real memory format via zbrt shims (approximate precision).
-- Fixes this round: &agg.field comptime pointers keep parent; @ptrCast slice->?slice len; ?T==T compares; saturating ops; nested packed struct bit size; switch |*x| captures alias operand; wide @clz/@ctz/@popCount.
-
-## BOOTSTRAP COMPLETE (fixed point)
-Chain: zb (C) compiles Zig 0.16 compiler -> QBE -> `zig2` (tools/build2.sh).
-- `zig2 build-obj ... -Mroot=lib/compiler_rt.zig` -> compiler_rt.c (OK)
-- `tools/self.sh`: zig2 compiles src/main.zig to C (`/data/zig2_self.c`, 218MB, ~2 min). EXIT 0.
-- gcc OOMs (4GB) on one 218MB TU -> `tools/csplit.py` splits it into header + 10 TUs; `tools/stage.sh IN.c OUTBIN` compiles+links (~3 min).
-- zig3 = stage.sh(zig2_self.c); zig3 compiles itself -> zig3_self.c; zig4 = stage.sh(zig3_self.c); zig4 -> zig4_self.c.
-- **zig3_self.c == zig4_self.c byte-for-byte.** zig2_self.c differs from them only in 12 f128 constant lines
-  (zb keeps f128 at f64 precision at runtime) plus resulting InternPool numbering.
-Remaining polish: real f128/f80 runtime precision in zb (so zig2 output matches directly); a17 u8+u16 peer bug;
-inline asm beyond syscall; assembler "value truncated" warnings.
-
-## Session update (f128, asm, 0.17)
-- Done: a17 peer fix; general inline asm (stubs in `<out>.asm.s`, must be linked); f80/f128 full precision (16-byte memory values + zbrt.c shims; link tools/zbrt.c); packed union bit sizes; f80 signbit (wide-int bitcast sign-extend).
-- zig2_self.c == zig3_self.c modulo numbering; numbering differences are InternPool thread nondeterminism -> self-compiles now use `-j1`.
-- stage3 (`zig4 build -p /data/stage3 -Dno-lib`) works: fmt/ast-check/run hello OK.
-- Zig 0.17.0: release notes at /data/zig-0.17.0-release-notes.md, source /data/zig17-src (config.zig = tools/config17.zig, no aro module).
-  zb supports std.lang, SoA @typeInfo, @backingInt/@fromBackingInt/@divCeil, builtin_std17.zig. `STD=/data/zig17-src/lib/std ./run_tests.sh` passes.
-  Compiling the 0.17 compiler: `cd /data/zig17-src && /data/zb/zb src/main.zig -o /data/zig17_2.ssa --std-dir lib/std -Mbuild_options=config.zig`
-  Next failure: lib/std/mem.zig:2327 (byteSwapAligned) "expected comptime type expression".
-
-## Zig 0.17.0 bootstrap: DONE (fixed point)
-- `tools/build17.sh` (zb -> /data/zig17_2, ~10 min) then `tools/boot17.sh`: compiler_rt17.c, zig17_2_self.c -> stage.sh (ZLIB/RT env) -> zig17_3 -> zig17_3_self.c.
-- Result: zig17_2_self.c == zig17_3_self.c byte-identical (-j1). zig17_2 builds and runs hello world.
-- csplit.py: strip `static` after bare `zig_noreturn`-style attributes too.
-
-## 0.17 language audit (release notes) — done
-- Covered by tests/std17 (run automatically when /data/zig17-src/lib/std exists, override STD17=): @hasDecl pub-only (global `zig17` flag set when std has lang.zig), slice.* / slice -> *[N]T for comptime-length slices, union(enum(T)) explicit tag values, @backingInt/@fromBackingInt/@divCeil, 0.17 @bitCast logical bit representation (runtime lbitcast in gen.c + zbrt.c zb_bitput/zb_bitget; comptime cflat/cunflat in ct.c), enum(noreturn) {}.
-- Removed syntax (`**`, void{}, errdefer capture, i0, internal/link_once) needs no work for valid input.
-
-## Session: @export/@extern/@cVa*/@prefetch + precise error sets (backup-01)
-- Done: @export (renames fn sym / var sym via Decl.xname; top-level comptime blocks now kept as N_COMPTIME decls and evaluated in main), @extern, @cVaStart/Arg/Copy/End (QBE vastart/vaarg; variadic fn defs emit `...`), @prefetch (no-op).
-- Error sets: TY_ERRSET now has ct (fields = names) for named sets (interned structurally), `||` merges, TY_ERRU carries set in t->ret (erru_of2). Inferred sets (!T) collect entries during gen (coerce hook note_err, gen_try) and resolve lazily via eset_resolve (re-entrant gen_fn). Name order of merged sets may differ from real Zig (it uses global string-intern order).
-- Verified: tests 37/37; 0.17 bootstrap still byte-identical. 0.16: zig2 self output differs from old zig4 only by f128 constant precision (zig4 predates the f128 fix; new output is the more precise one). TODO: rebuild zig3 from /data/zig2b_self.c via stage.sh to reconfirm 0.16 fixed point.
+## Open items
+- Error-set name order differs from Zig (Zig uses global string intern order).
+- No runtime safety checks (ReleaseFast-like).
+- CI stage3 (`zig build` with the bootstrapped compiler) was only verified on 0.16.
