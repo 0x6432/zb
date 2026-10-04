@@ -5,7 +5,7 @@ ifeq ($(GC),1)
 CFLAGS += -DZB_GC
 LIBS += -lgc
 endif
-zb: src/*.c src/zb.h
+zb: src/*.c src/*.h
 	$(CC) $(CFLAGS) -rdynamic -o zb src/*.c -lm $(LIBS)
 test: zb
 	./run_tests.sh
