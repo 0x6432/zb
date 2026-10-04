@@ -1551,6 +1551,7 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
     else { dp = opnd(d); et = d.t->elem; }
     if (sv.t->k == TY_SLICE) { sp = load(t_u64, addr_of(sv)); if (!len) len = load(t_u64, addp(addr_of(sv), 8)); }
     else if (sv.ck && sv.cv.k == CV_STR) { sp = mat(sv); if (!len) len = fmt("%d", sv.cv.slen); }
+    else if (sv.t->k == TY_ARRAY) { sp = addr_of(sv); if (!len) len = fmt("%lld", (long long)sv.t->len); }
     else if (sv.t->k == TY_PTR && sv.t->elem->k == TY_ARRAY) { sp = opnd(sv); if (!len) len = fmt("%lld", (long long)sv.t->elem->len); }
     else sp = opnd(sv);
     char *nb = tmp(); emit("%s =l mul %s, %d", nb, len, tsize(et)); emit("call $memmove(l %s, l %s, l %s)", dp, sp, nb);
@@ -1703,7 +1704,11 @@ static Val gen_block(Node *n, Scope *s, Type *ex) {
   if (!term) run_defers(base, NULL);
   defers.n = base;
   if (n->label) {
-    loops = L.up; if (fell && !term) { if (!R.t) { R.t = t_void; } R.has = 1; jmp(L.brk); }
+    loops = L.up; if (fell && !term) {
+      if (R.ex && R.ex->k == TY_ERRU && R.ex->elem == t_void && !R.collect) res_put(&R, coerce(VOIDV(), R.ex)); /* fallthrough = success */
+      else if (R.t && R.t->k == TY_ERRSET) { R.t = erru_of2(t_void, R.t); R.has = 1; }
+      else { if (!R.t) { R.t = t_void; } R.has = 1; }
+      jmp(L.brk); }
     label(L.brk); return res_get(&R);
   }
   if (!fell) return NORET();
@@ -1769,13 +1774,13 @@ static Val gen_if(Node *n, Scope *s, Type *ex) {
     return n->c ? gen(n->c, s, ex) : VOIDV();
   }
   Res R; memset(&R, 0, sizeof R); R.ex = ex;
-  if (!ex && n->c && !in_typeof) { Type *t1 = typeof_impl(n->b, s), *t2 = typeof_impl(n->c, s), *p = peer_t(t1, t2); if (p && p != t1 && p->k != TY_CINT) R.ex = p; }
-  if (!ex && n->c && in_typeof) R.collect = 1;
   Val cv0 = n->cap ? (Val){0} : gen(n->a, s, t_bool);
   if (!n->cap && cv0.ck && cv0.cv.k == CV_BOOL) {
     if (cv0.cv.i) return gen(n->b, s, ex);
     return n->c ? gen(n->c, s, ex) : VOIDV();
   }
+  if (!ex && n->c && !in_typeof) { Type *t1 = typeof_impl(n->b, s), *t2 = typeof_impl(n->c, s), *p = peer_t(t1, t2); if (p && p != t1 && p->k != TY_CINT) R.ex = p; }
+  if (!ex && n->c && in_typeof) R.collect = 1;
   char *lt = newl(), *lf = newl(), *lx = newl();
   Scope *ts = new_scope(s, NULL), *es = new_scope(s, NULL);
   Val cv = coerce(cv0, t_bool); br(opnd(cv), lt, lf); label(lt);
@@ -1814,7 +1819,7 @@ static Val gen_while(Node *n, Scope *s, Type *ex) {
   L.label = n->label; L.brk = lx; L.cont = lk; L.res = &R; L.dbase = defers.n; L.kind = 0;
   jmp(lc); label(lc);
   Scope *bs = new_scope(s, NULL), *es = new_scope(s, NULL);
-  if (n->cap) {
+  if (n->cap || n->cap2) {
     Val cv = gen(n->a, s, NULL);
     if (cv.t->k == TY_OPT && cv.t->elem->k == TY_NORET) { jmp(le); label(lb); skip = 1; } /* ?noreturn: always null, body unanalyzed */
     else if (cv.t->k == TY_OPT) {
@@ -1823,7 +1828,7 @@ static Val gen_while(Node *n, Scope *s, Type *ex) {
       label(lb); cap_bind(bs, n->cap, n->capref, opt_payload(cv, pv));
     } else {
       char *a = addr_of(cv), *e = load(t_u16, a); br(e, le, lb);
-      label(lb); if (cv.t->elem != t_void) cap_bind(bs, n->cap, n->capref, LV(cv.t->elem, addp(a, erru_off(cv.t)))); else if (strcmp(n->cap, "_")) bind_cval(bs, n->cap, cv_void());
+      label(lb); if (!n->cap) ; else if (cv.t->elem != t_void) cap_bind(bs, n->cap, n->capref, LV(cv.t->elem, addp(a, erru_off(cv.t)))); else if (strcmp(n->cap, "_")) bind_cval(bs, n->cap, cv_void());
       if (n->cap2) bind_val(es, n->cap2, V(eset_of(cv.t), e));
     }
   } else {
@@ -2097,6 +2102,13 @@ static Val gen_switch(Node *n, Scope *s, Type *ex) {
   L.up = loops; loops = &L;
   for (int i = 0; i < cases.n; i++) {
     Case *c = cases.a[i]; Node *pr = c->pr; label(c->lab); Scope *ps = new_scope(s, NULL);
+    if (isu && !pr->cap && !c->isct && !(pr->flags & F_ELSE)) { /* prong whose fields all have noreturn payloads is unreachable (not analyzed) */
+      int allnr = pr->list.n > 0;
+      for (int j = 0; j < pr->list.n && allnr; j++) { CVal iv; Field *f = NULL; Node *it = pr->list.a[j];
+        if (it->k != N_RANGE && ceval(it, s, &iv)) { if (iv.k == CV_ENUMLIT) f = find_field(ct->ct, iv.s); else if (iv.k == CV_INT) for (int k = 0; k < ct->ct->fields.n; k++) { Field *ff = ct->ct->fields.a[k]; if (ff->val == (int64_t)iv.i) f = ff; } }
+        if (!f || f->t->k != TY_NORET) allnr = 0; }
+      if (allnr) { emit("hlt"); term = 1; continue; }
+    }
     if (pr->cap) {
       if (isu) {
         Field *f = NULL;
@@ -2147,7 +2159,8 @@ static Val ret_val(Val v, int noval) {
   term = 1; return NORET();
 }
 static Val gen_try(Node *n, Scope *s, Type *ex) {
-  Val v = gen(n->a, s, ex && ex->k != TY_ERRU && ex->k != TY_ANYTYPE ? erru_of(ex) : NULL);
+  Type *pe = ex && ex->k == TY_ERRU && n->a->k == N_CALL && n->a->a->k == N_ENUMLIT ? ex->elem : ex; /* `return try .init(..)` */
+  Val v = gen(n->a, s, pe && pe->k != TY_ERRU && pe->k != TY_ANYTYPE ? erru_of(pe) : NULL);
   if (v.t->k == TY_ERRSET) { if (fret->k == TY_ERRU && is_inferred_eset(fret->ret)) eset_add_set(fret->ret, v.t); char *e = opnd(v); store(t_u16, e, fsret); run_defers(0, e); emit("ret"); term = 1; return NORET(); }
   if (fret->k == TY_ERRU && is_inferred_eset(fret->ret) && v.t->k == TY_ERRU) eset_add_set(fret->ret, eset_of(v.t));
   if (v.t->k != TY_ERRU) return v; /* lenient: only reachable in code real Zig would not analyze (e.g. catch of an empty inferred error set) */
@@ -2166,6 +2179,7 @@ static Val gen_catch(Node *n, Scope *s, Type *ex) {
     if (v.cv.k == CV_ERR) { Scope *cs = new_scope(s, NULL); if (n->cap) bind_cval(cs, n->cap, v.cv); return gen(n->b, cs, ex); }
     return ex ? coerce(v, ex) : v;
   }
+  if (v.t->k == TY_ERRSET) { Scope *cs = new_scope(s, NULL); if (n->cap) bind_val(cs, n->cap, V(v.t, opnd(v))); return gen(n->b, cs, ex); } /* operand is a bare error set: always the error path */
   if (v.t->k != TY_ERRU) die("%s:%d: catch on non error union %s (ck=%d)", n->tok->file, n->tok->line, tname(v.t), v.ck);
   Res R; memset(&R, 0, sizeof R); R.ex = ex ? ex : v.t->elem;
   int discard = !ex && n->b->k == N_BLOCK && n->b->list.n == 0 && !n->b->label; /* `x catch {}`: result is void */

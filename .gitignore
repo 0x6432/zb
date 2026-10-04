@@ -7,3 +7,4 @@ build/
 zbg
 zbp
 zig-0.17.0
+bin/

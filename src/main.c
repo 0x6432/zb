@@ -1,5 +1,5 @@
 #include "zb.h"
-int zig17; Vec zb_exports;
+int zig17; static int multi_threaded, no_libc; Vec zb_exports;
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -30,6 +30,10 @@ int main(int argc, char **argv) {
     else if (!strncmp(argv[i], "--std-dir=", 10)) stddir = argv[i] + 10;
     else if (!strncmp(argv[i], "-M", 2) && strchr(argv[i], '=')) { char *e = strchr(argv[i], '='); add_module(xstrndup(argv[i] + 2, e - argv[i] - 2), e + 1); }
     else if (!strcmp(argv[i], "--dep") && i + 1 < argc) i++;
+    else if (!strcmp(argv[i], "-fno-single-threaded")) multi_threaded = 1;
+    else if (!strcmp(argv[i], "-fsingle-threaded")) multi_threaded = 0;
+    else if (!strcmp(argv[i], "-fno-libc")) no_libc = 1;
+    else if (!strcmp(argv[i], "-lc")) no_libc = 0;
     else if (!in) in = argv[i];
     else die("unexpected argument %s", argv[i]);
   }
@@ -40,6 +44,16 @@ int main(int argc, char **argv) {
     char *rd = realpath(stddir, NULL); if (!rd) die("--std-dir: cannot open %s", stddir);
     std_file = fmt("%s/std.zig", rd); std_builtin_file = fmt("%s/builtin.zig", rd); if (access(std_builtin_file, R_OK)) std_builtin_file = fmt("%s/lang.zig", rd); /* 0.17: std.builtin -> std.lang */
     zig17 = strstr(std_builtin_file, "/lang.zig") != NULL; builtin_file = fmt(zig17 ? "%s/builtin_std17.zig" : "%s/builtin_std.zig", lib_dir); using_real_std = 1;
+  }
+  if (zig17 && (multi_threaded || no_libc) && o) { /* builtin variant: write a patched copy next to the output */
+    FILE *bf = fopen(builtin_file, "r"); if (!bf) die("cannot read %s", builtin_file);
+    char *nb = fmt("%s.builtin.zig", o); FILE *wf = fopen(nb, "w"); if (!wf) die("cannot write %s", nb); char line[4096];
+    while (fgets(line, sizeof line, bf)) {
+      if (multi_threaded && !strncmp(line, "pub const single_threaded = ", 28)) fputs("pub const single_threaded = false;\n", wf);
+      else if (no_libc && !strncmp(line, "pub const link_libc = ", 22)) fputs("pub const link_libc = false;\n", wf);
+      else fputs(line, wf);
+    }
+    fclose(bf); fclose(wf); builtin_file = realpath(nb, NULL);
   }
   if (!std_file) { std_file = fmt("%s/std.zig", lib_dir); std_builtin_file = fmt("%s/std/builtin.zig", lib_dir); builtin_file = fmt("%s/builtin.zig", lib_dir); }
   if (getenv("ZB_PARSE_ONLY")) { parse_file(in); return 0; }
