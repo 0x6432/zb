@@ -1,5 +1,7 @@
 # zb — a bootstrap Zig compiler in C, targeting QBE (x86_64 only)
 
+**Target language/std: Zig 0.17.0 only** (0.16 support dropped; achieved: 0.17 bootstrap fixed point).
+
 ## 0. Reality check / end goal
 The real goal of a Zig bootstrap compiler is to compile the Zig compiler itself
 (`src/main.zig` + `lib/std`). That code uses heavy comptime (generics, `@typeInfo`,

@@ -1,3 +1,9 @@
+# CURRENT TARGET: Zig 0.17.0 only (0.16 dropped)
+- Sources: Zig 0.17 at /data/zig17-src (config.zig = tools/config17.zig, no aro module); `zb/zig-0.17.0` -> symlink to it (gitignored).
+- Build/verify: `tools/build17.sh` (zb -> /data/zig17_2), `tools/boot17.sh` (compiler_rt17 + self -> zig17_3 -> cmp). Tests: `./run_tests.sh` (default STD=zig-0.17.0/lib/std; 37/37).
+- 0.16-only scripts (build2/self/zc/qb/rz/cc3, tools/config.zig) removed; CI (`ci/bootstrap.sh`, workflow) now fetches and bootstraps 0.17.0.
+- Sections below are history; paths mentioning 0.16 / /data/zig-src are obsolete.
+
 # zb — handoff notes (for the next agent)
 
 ## Goal

@@ -5,3 +5,4 @@ m5-zig017-std Zig 0.17.0 std supported (std.lang, SoA typeInfo, backingInt, divC
 m5-zig017-bootstrap zb bootstraps Zig 0.17.0: zb-built zig2 and gcc-built zig3 self-compile byte-identically (-j1)
 m6-zig017-lang-audit 0.17 release-note language changes covered by tests/std17; 0.17 bootstrap still byte-identical
 backup-01 export/cVa/prefetch builtins + precise error sets; 0.17 fixed point holds
+m7-zig017-only target only Zig 0.17.0: 0.16 scripts removed, CI/tests/docs on 0.17

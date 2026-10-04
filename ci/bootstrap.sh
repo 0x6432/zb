@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full zb bootstrap pipeline (portable version of tools/*.sh).
-#   ZIGSRC  : Zig 0.16.0 source tree (with lib/)          default: $WORK/zig-0.16.0
+#   ZIGSRC  : Zig 0.17.0 source tree (with lib/)          default: $WORK/zig-0.17.0
 #   QBE     : qbe binary                                  default: $WORK/qbe-1.2/qbe
 #   WORK    : scratch dir for big artifacts               default: $PWD/work
 # Stages: zb -> zig2 (QBE) -> compiler_rt.c + zig2_self.c -> zig3 (cc) -> zig3_self.c -> zig4 -> zig4_self.c
@@ -8,19 +8,19 @@
 set -euo pipefail
 ZB=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${WORK:-$PWD/work}; mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
-ZIGSRC=$(cd "${ZIGSRC:-$WORK/zig-0.16.0}" && pwd); QBE=$(readlink -f "${QBE:-$WORK/qbe-1.2/qbe}"); export QBE
+ZIGSRC=$(cd "${ZIGSRC:-$WORK/zig-0.17.0}" && pwd); QBE=$(readlink -f "${QBE:-$WORK/qbe-1.2/qbe}"); export QBE
 STAGE=${1:-all}
 ulimit -s unlimited || true
 log() { echo "::group::$*" 2>/dev/null || true; echo "== $* ($(date +%T))"; }
 end() { echo "::endgroup::" 2>/dev/null || true; }
-cp "$ZB/tools/config.zig" "$ZIGSRC/config.zig"
+cp "$ZB/tools/config17.zig" "$ZIGSRC/config.zig"
 CCFLAGS="-std=c99 -O${OPT:-1} -w -fno-stack-protector -fno-strict-aliasing -fno-tree-sra -I$ZIGSRC/lib"
 
 build_zb() { log "build zb"; make -C "$ZB" GC=1 -s; (cd "$ZB" && bash run_tests.sh | tail -3); end; }
 
 build_zig2() {
   log "zb: Zig compiler -> QBE IL"
-  (cd "$ZIGSRC" && "$ZB/zb" src/main.zig -o "$WORK/zig2.ssa" --std-dir lib/std -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig) > "$WORK/zb.log" 2>&1 \
+  (cd "$ZIGSRC" && "$ZB/zb" src/main.zig -o "$WORK/zig2.ssa" --std-dir lib/std -Mbuild_options=config.zig) > "$WORK/zb.log" 2>&1 \
     || { echo "zb failed:"; grep -v 'note:' "$WORK/zb.log" | tail -30; exit 1; }
   { grep -v 'note:' "$WORK/zb.log" | head -20; } || true
   log "qbe + as + link zig2"
@@ -33,7 +33,7 @@ build_zig2() {
 
 selfc() { # selfc BIN OUT.c
   (cd "$ZIGSRC" && "$1" build-exe -j1 -ofmt=c -lc -OReleaseSmall --name zig2 -femit-bin="$2" -target x86_64-linux --zig-lib-dir lib \
-     --dep build_options --dep aro -Mroot=src/main.zig -Mbuild_options=config.zig -Maro=lib/compiler/aro/aro.zig)
+     --dep build_options -Mroot=src/main.zig -Mbuild_options=config.zig)
 }
 stagebin() { # stagebin IN.c OUTBIN : split + cc + link
   local d="$WORK/split_$(basename "$2")"; rm -rf "$d"

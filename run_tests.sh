@@ -4,12 +4,12 @@ cd "$(dirname "$0")"
 QBE=${QBE:-./qbe-1.2/qbe}
 pass=0; fail=0
 mkdir -p build; cc -O1 -c -o build/zbrt.o tools/zbrt.c
-STD=${STD:-./zig-0.16.0/lib/std}
-STD17=${STD17:-/data/zig17-src/lib/std}
-list="tests/*.zig"; [ -d "$STD" ] && list="$list tests/std/*.zig"; [ -f "$STD17/lang.zig" ] && list="$list tests/std17/*.zig"
+# Zig 0.17.0 std (zig-0.17.0/lib/std); tests/std and tests/std17 run when it is present
+STD=${STD:-./zig-0.17.0/lib/std}
+list="tests/*.zig"; [ -f "$STD/lang.zig" ] && list="$list tests/std/*.zig tests/std17/*.zig"
 for t in $list; do
   b=build/$(basename $t .zig); extra=""
-  case $t in tests/std/*) extra="--std-dir $STD";; tests/std17/*) extra="--std-dir $STD17";; esac
+  case $t in tests/std/*) extra="--std-dir $STD";; tests/std17/*) extra="--std-dir $STD";; esac
   if ! ./zb $t $extra -o $b.ssa 2> $b.err; then echo "FAIL (zb)   $t: $(head -1 $b.err)"; fail=$((fail+1)); continue; fi
   if ! $QBE -o $b.s $b.ssa 2> $b.err; then echo "FAIL (qbe)  $t: $(head -1 $b.err)"; fail=$((fail+1)); continue; fi
   if ! cc -o $b $b.s $b.ssa.asm.s build/zbrt.o -lm 2> $b.err; then echo "FAIL (link) $t: $(head -1 $b.err)"; fail=$((fail+1)); continue; fi

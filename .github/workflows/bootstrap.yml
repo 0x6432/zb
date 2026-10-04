@@ -1,5 +1,5 @@
 name: bootstrap
-# Builds zb, runs its tests, compiles the Zig 0.16.0 compiler with zb (-> QBE -> zig2),
+# Builds zb, runs its tests, compiles the Zig 0.17.0 compiler with zb (-> QBE -> zig2),
 # then bootstraps zig2 -> zig3 -> zig4 through Zig's C backend, checks the fixed point
 # (zig3 output == zig4 output), and builds stage3 with Zig's own build system and tools.
 on:
@@ -9,7 +9,7 @@ on:
 permissions:
   contents: write
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.17.0
   QBE_VERSION: "1.2"
 jobs:
   bootstrap:
@@ -38,23 +38,23 @@ jobs:
           [ -f dl/qbe.tar.xz ] || curl -fL -o dl/qbe.tar.xz https://c9x.me/compile/release/qbe-$QBE_VERSION.tar.xz
           tar xf dl/zig.tar.xz && tar xf dl/qbe.tar.xz
           make -C qbe-$QBE_VERSION -j$(nproc)
-          mkdir -p ../zig-0.16.0 && cp -r zig-$ZIG_VERSION/lib ../zig-0.16.0/   # std used by zb's own tests
+          mkdir -p ../zig-0.17.0 && cp -r zig-$ZIG_VERSION/lib ../zig-0.17.0/   # std used by zb's own tests
       - name: Build zb and run zb tests
         run: bash ci/bootstrap.sh zb
-        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+        env: { WORK: work, ZIGSRC: work/zig-0.17.0, QBE: work/qbe-1.2/qbe }
       - name: zb compiles the Zig compiler -> zig2
         run: bash ci/bootstrap.sh zig2
-        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+        env: { WORK: work, ZIGSRC: work/zig-0.17.0, QBE: work/qbe-1.2/qbe }
       - name: Bootstrap stages zig2 -> zig3 -> zig4
         run: bash ci/bootstrap.sh stages
-        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe, JOBS: 2 }
+        env: { WORK: work, ZIGSRC: work/zig-0.17.0, QBE: work/qbe-1.2/qbe, JOBS: 2 }
       - name: Binary comparison (fixed point)
         run: bash ci/bootstrap.sh compare
-        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+        env: { WORK: work, ZIGSRC: work/zig-0.17.0, QBE: work/qbe-1.2/qbe }
       - name: Zig's own build system and tools (stage3)
         run: bash ci/bootstrap.sh stage3
         continue-on-error: true
-        env: { WORK: work, ZIGSRC: work/zig-0.16.0, QBE: work/qbe-1.2/qbe }
+        env: { WORK: work, ZIGSRC: work/zig-0.17.0, QBE: work/qbe-1.2/qbe }
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,7 +64,7 @@ jobs:
           if-no-files-found: warn
           path: |
             work/
-            !work/zig-0.16.0/
+            !work/zig-0.17.0/
             !work/qbe-1.2/
             !work/*.tar.*
             build/
