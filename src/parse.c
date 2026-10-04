@@ -260,7 +260,7 @@ static Node *parse_type_expr0(void) {
     if (accept("]")) { n = mk(N_TPTR); n->s = "[]"; ptr_attrs(n); n->a = parse_type_expr(); return n; }
     if (accept(":")) { n = mk(N_TPTR); n->s = "[]"; n->b = parse_expr(); expect("]"); ptr_attrs(n); n->a = parse_type_expr(); return n; }
     n = mk(N_TARRAY);
-    if (cur()->k == TK_ID && !strcmp(cur()->s, "_") && tis(ahead(1), "]")) P++; else n->a = parse_expr();
+    if (cur()->k == TK_ID && !strcmp(cur()->s, "_") && (tis(ahead(1), "]") || tis(ahead(1), ":"))) P++; else n->a = parse_expr();
     if (accept(":")) n->c = parse_expr();
     expect("]"); n->b = parse_type_expr(); return n;
   }

@@ -42,6 +42,11 @@ cd /data/zb && ln -sfn /data/zig17-src zig-0.17.0 && make GC=1 -s && ./run_tests
   (erru_of2). Inferred sets collect entries in coerce/gen_try and resolve by generating the fn re-entrantly.
 
 ## Open items
+- `zig` driver (driver/zig.zig → bin/zig): build-exe/obj/lib/run work. `zig build` blocked: compiling
+  lib/compiler/Maker.zig hits std/crypto/pcurves (p256.zig:26 basePoint) — zb comptime ints are 128-bit
+  (CVal.i + a 256-bit comptime_int-only `big/ih` path); int literals are lexed into u128 (Tok.ival) so wider
+  literals are silently truncated. Needs arbitrary-width comptime ints (u256/u384 typed values, @bitCast to
+  byte arrays, materialization). Also: x86_64.zig:148 restore_rt asm with an "i" constraint compiles to a trap.
 - Error-set name order differs from Zig (Zig uses global string intern order).
 - No runtime safety checks (ReleaseFast-like).
 - CI stage3 (`zig build` with the bootstrapped compiler) was only verified on 0.16.

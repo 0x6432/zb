@@ -455,6 +455,11 @@ static void note_err(Type *S, Val v) {
 }
 static Val coerce(Val v, Type *to) {
   if (!to || v.t == to) return v;
+  if (!v.ck && v.t && v.t->k == TY_ARRAY && to->k == TY_ARRAY && v.t->len == to->len && v.t->elem != to->elem && (is_vec(v.t) || is_vec(to))
+      && (v.t->elem->k == TY_INT || v.t->elem->k == TY_FLOAT) && (to->elem->k == TY_INT || to->elem->k == TY_FLOAT)) { /* elementwise vector widening */
+    v = rv(v); char *sl = slot(to), *pa = addr_of(v);
+    for (int64_t i = 0; i < to->len; i++) { Val e = rv(LV(v.t->elem, addp(pa, i * tsize(v.t->elem)))); put(coerce(e, to->elem), to->elem, addp(sl, i * tsize(to->elem))); }
+    return V(to, sl); }
   if (to->k == TY_ERRU && is_inferred_eset(to->ret)) note_err(to->ret, v); else if (is_inferred_eset(to)) note_err(to, v);
   if (v.ck && v.cv.k == CV_SLICE && v.t && v.t->k == TY_SLICE && to->k == TY_PTR && to->elem->k == TY_ARRAY && to->elem->len == v.cv.slen && to->elem->elem == v.t->elem) {
     int64_t off; char *sym = ptr_parts(&v.cv, &off); if (sym) return V(to, addp(sym, off)); } /* 0.17: comptime-length slice -> *[N]T */
@@ -713,6 +718,7 @@ static Val gen_cmp(const char *op, Val a, Val b);
 static Val vel(Val v, int64_t i) { Type *et = v.t->elem; return rv(LV(et, addp(addr_of(v), i * tsize(et)))); }
 static Val vec_bin(const char *op, Val a, Val b, int cmp) {
   Type *vt = is_vec(a.t) ? a.t : b.t;
+  if (is_vec(a.t) && is_vec(b.t) && a.t->elem != b.t->elem) { Type *pe = peer_t(a.t->elem, b.t->elem); if (pe) vt = vec_of(pe, a.t->len); a = coerce(a, vt); b = coerce(b, vt); }
   if (!is_vec(a.t)) a = coerce(a, vt); if (!is_vec(b.t)) b = coerce(b, vt);
   Type *rt = cmp ? vec_of(t_bool, vt->len) : vt; char *sl = slot(rt);
   char *pa = addr_of(a), *pb = addr_of(b); a = V(a.t, pa); b = V(b.t, pb);
@@ -1448,7 +1454,11 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
   }
   if (!strcmp(b, "intFromPtr")) { Val v = rv(gen(x, s, NULL)); if (v.t->k == TY_SLICE) return V(t_usize, load(t_u64, addr_of(v))); return V(t_usize, opnd(v)); }
   if (!strcmp(b, "ptrFromInt")) { Val v = coerce(gen(x, s, t_usize), t_usize); return V(ex, opnd(v)); }
-  if (!strcmp(b, "intFromBool")) { Val v = coerce(gen(x, s, t_bool), t_bool); return V(t_u1, opnd(v)); }
+  if (!strcmp(b, "intFromBool")) { Val v = gen(x, s, NULL);
+    if (is_vec(v.t)) { v = rv(v); Type *rt = vec_of(t_u1, v.t->len); char *sl = slot(rt), *pa = addr_of(v);
+      for (int64_t i = 0; i < v.t->len; i++) { char *e = load(t_bool, addp(pa, i * tsize(t_bool))); store(t_u1, e, addp(sl, i * tsize(t_u1))); }
+      return V(rt, sl); }
+    v = coerce(v, t_bool); return V(t_u1, opnd(v)); }
   if (!strcmp(b, "intFromEnum")) {
     Val v = rv(gen(x, s, NULL)); Type *t = v.t; if (t->ct) layout(t->ct); if (t->k == TY_UNION && t->ct->tag && t->ct->tag->ct) layout(t->ct->tag->ct);
     if (t->k == TY_UNION) { return V(t->ct->tag->ct->tag, load(t->ct->tag, addp(addr_of(v), union_tag_off(t)))); }
@@ -1589,7 +1599,9 @@ static Val gen_builtin(Node *n, Scope *s, Type *ex) {
     else emit("%s =%c sub %s, %s", res, cl, q, ext);
     return V(t, res);
   }
-  if (!strcmp(b, "shlExact") || !strcmp(b, "shrExact")) return gen_arith(b[1] == 'h' && b[2] == 'l' ? "<<" : ">>", gen(x, s, ex), gen(y, s, NULL));
+  if (!strcmp(b, "shlExact") || !strcmp(b, "shrExact")) { Val a = gen(x, s, ex); Type *st = NULL;
+    if (a.t->k == TY_INT) { int bb = bits_of(a.t), l = 0; while ((1 << l) < bb) l++; st = int_type(l, 0); } /* rhs result type: Log2Int(T) */
+    return gen_arith(b[1] == 'h' && b[2] == 'l' ? "<<" : ">>", a, gen(y, s, st)); }
   if (!strcmp(b, "abs")) {
     Val a = rv(gen(x, s, NULL)); Type *t = a.t;
     if (is_bigf(t)) return V(t, bigf_op(9, t, opnd(a), NULL));
@@ -2404,6 +2416,7 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     return r;
   }
   case N_DEREF: { Val v = rv(gen(n->a, s, NULL));
+    if (v.t->k == TY_ARRAY) return v; /* `(a ++ b).*`: zb's runtime ++ yields the array value itself */
     if (v.t->k == TY_SLICE) { CVal sc; if (!ceval(n->a, s, &sc) || sc.k != CV_SLICE) die("%s:%d: slice deref needs a comptime-known length", n->tok->file, n->tok->line);
       return LV(array_of(v.t->elem, sc.slen, 0, 0), load(t_u64, addr_of(v))); } Val r = LV(v.t->elem, opnd(v)); if (v.t->k == TY_PTR && v.t->len > 0) { r.bf = 1; r.hbytes = (int)v.t->len; r.bitoff = (int)v.t->sent; } return r; }
   case N_UNWRAP: { Val v = gen(n->a, s, NULL);
@@ -2507,7 +2520,10 @@ static Val gen(Node *n, Scope *s, Type *ex) {
     Val a = rv(gen(n->a, s, cmp ? NULL : ex));
     Type *bh = cmp ? (a.t->k == TY_CINT || a.t->k == TY_ENUMLIT ? NULL : a.t) : (a.t->k == TY_CINT ? ex : (a.t->k == TY_MPTR ? t_usize : a.t));
     if (bh && !cmp && (n->b->k == N_SWITCH || n->b->k == N_IF) && !in_typeof) { Type *bt = typeof_impl(n->b, s); if (bt && (bt->k == TY_INT || bt->k == TY_FLOAT) && bt != bh) bh = NULL; }
+    if (bh && bh->k == TY_ARRAY && bh->isconst != 2) bh = NULL; /* array operand: the other side may be a vector (peer) */
     Val b = rv(gen(n->b, s, bh));
+    if (a.t->k == TY_ARRAY && b.t->k == TY_ARRAY && a.t->len == b.t->len && (a.t->isconst == 2) != (b.t->isconst == 2)) { /* array op vector: peer type is the vector */
+      if (a.t->isconst == 2) b = coerce(b, a.t); else a = coerce(a, b.t); }
     if (a.ck && a.t->k == TY_CINT && b.t->k == TY_CINT && !b.ck) a = coerce(a, t_i64);
     if (cmp && !a.ck && a.t->k == TY_INT && b.ck && b.cv.k == CV_INT) { CVal raw; if (ceval(n->b, s, &raw) && raw.k == CV_INT && cv_typeof(&raw)->k == TY_CINT) b = CK(raw); }
     if (cmp) return gen_cmp(op, a, b);

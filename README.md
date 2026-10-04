@@ -29,3 +29,12 @@ qbe -o prog.s prog.ssa && cc -o prog prog.s prog.ssa.asm.s tools/zbrt.c -lm && .
 
 Debug aids: `ZB_TRAPLOC=1` (trap source locations), `ZB_CT_TRACE=1`, `ZB_BT=1`, `ZB_DBG=1` (QBE line info).
 See `HANDOFF.md` for working notes and `PLAN.md` for the design.
+
+## `zig` driver (driver/zig.zig)
+A small `zig`-compatible front end written in Zig and compiled by zb: `./driver/build.sh` → `bin/zig`.
+Uses `zig-0.17.0/lib` next to the repo (override: `ZB_ZIG_LIB`), cache `~/.cache/zb-zig` (`ZIG_GLOBAL_CACHE_DIR`).
+* `zig build-exe|build-obj|build-lib file.zig [-femit-bin=..] [--name ..] [-dynamic] [-lc] [x.c] [-lfoo]` — zb → QBE → cc/ld/ar.
+* `zig run file.zig [-- args]`, `zig version`, `zig env`.
+* `zig build|fetch|init` — compile `lib/compiler/Maker.zig` with zb and exec it (implements the `--listen=-`
+  compiler-server subset the build system uses). **Not working yet**: Maker pulls in std.crypto (TLS for
+  fetching), whose comptime constants need >128-bit comptime integers, which zb does not support yet.
